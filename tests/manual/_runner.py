@@ -22,6 +22,7 @@ def run_viz(
     scenario: Callable[[SimulationCoordinator], Awaitable[None]],
     *,
     world_size: float = 20.0,
+    world_center: tuple[float, float] = (0.0, 0.0),
     title: str = "coordination_oru",
     width: int = 800,
     height: int = 800,
@@ -49,7 +50,12 @@ def run_viz(
     thread.start()
 
     viewer = PygletViewer(
-        sim, world_size=world_size, title=title, width=width, height=height
+        sim,
+        world_size=world_size,
+        world_center=world_center,
+        title=title,
+        width=width,
+        height=height,
     )
     viewer.stop_when_idle()
     try:

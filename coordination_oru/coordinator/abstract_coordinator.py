@@ -24,6 +24,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 import networkx as nx
+from shapely.ops import unary_union
 
 from coordination_oru.coordinator.critical_section import CriticalSection
 from coordination_oru.coordinator.mission import Mission
@@ -41,14 +42,20 @@ if TYPE_CHECKING:
 
 
 COORDINATION_PERIOD: float = 0.05  # seconds
+TRAILING_PATH_POINTS: int = 3  # Java original: convoy safety buffer
 
 
 class AbstractTrajectoryEnvelopeCoordinator:
     """Drive a fleet of trajectory envelopes safely through critical sections."""
 
-    def __init__(self, period: float = COORDINATION_PERIOD) -> None:
+    def __init__(
+        self,
+        period: float = COORDINATION_PERIOD,
+        trailing_path_points: int = TRAILING_PATH_POINTS,
+    ) -> None:
         self.solver = TrajectoryEnvelopeSolver()
         self.period = period
+        self.trailing_path_points = trailing_path_points
 
         # registries keyed by robot_id (one active envelope per robot at a time)
         self._trackers: dict[int, "AbstractTrajectoryEnvelopeTracker"] = {}
@@ -233,7 +240,14 @@ class AbstractTrajectoryEnvelopeCoordinator:
     # -------------------------------------------------------- permits update
 
     def _update_permits(self) -> None:
-        """For each tracker, set ``permit_index_until`` based on active CSes."""
+        """For each tracker, set ``permit_index_until`` based on active CSes.
+
+        For each CS this envelope is the *yielder* of, compute a critical
+        point via :meth:`_get_critical_point` — the dynamic version of the
+        Java algorithm that lets the yielder *follow* the leader through a
+        shared corridor at a fixed trailing distance, rather than waiting at
+        the entrance until the leader has fully cleared.
+        """
         for robot_id, tracker in self._trackers.items():
             envelope = self._envelopes.get(robot_id)
             if envelope is None or envelope.completed:
@@ -242,22 +256,71 @@ class AbstractTrajectoryEnvelopeCoordinator:
             for cs in self._critical_sections:
                 if envelope.envelope_id not in cs.key:
                     continue
-                self_start, _self_end = cs.cs_range_for(envelope.envelope_id)
-                other = cs.other(envelope.envelope_id)
-                _other_start, other_end = cs.cs_range_for(other.envelope_id)
                 priority_winner = self._priority[cs.key]
                 if priority_winner == envelope.envelope_id:
                     continue  # we own this CS, no restriction from it
-                # We must hold short of self_start until the other has cleared
-                # past other_end.
+                other = cs.other(envelope.envelope_id)
+                _other_start, other_end = cs.cs_range_for(other.envelope_id)
                 other_report = self._reports.get(other.robot_id)
-                other_passed = (
-                    other.completed
-                    or (other_report is not None and other_report.path_index > other_end)
+                # Leader has fully cleared the CS -> yielder unrestricted.
+                if other.completed or (
+                    other_report is not None and other_report.path_index > other_end
+                ):
+                    continue
+                leader_index = (
+                    other_report.path_index if other_report is not None else 0
                 )
-                if not other_passed:
-                    permit = min(permit, max(0, self_start - 1))
+                cp = self._get_critical_point(envelope, other, cs, leader_index)
+                permit = min(permit, cp)
             tracker.permit_index_until = permit
+
+    def _get_critical_point(
+        self,
+        yielding: TrajectoryEnvelope,
+        leader: TrajectoryEnvelope,
+        cs: CriticalSection,
+        leader_current_index: int,
+    ) -> int:
+        """Largest path index the yielder may advance to right now.
+
+        Mirrors the Java ``AbstractTrajectoryEnvelopeCoordinator.getCriticalPoint``:
+
+        1. If the leader hasn't reached the CS yet, the yielder stops at
+           ``yielder_start - trailing`` (one trailing-buffer short of the
+           shared corridor).
+        2. Otherwise, take the leader's footprint at its current waypoint,
+           union it with every leader CS waypoint footprint between there and
+           ``leader_end``, and walk the yielder's CS waypoints. The first
+           yielder waypoint whose footprint intersects that swept area is the
+           collision boundary; the yielder may advance to that index minus
+           the trailing buffer.
+        3. If no yielder CS waypoint intersects the leader's remaining sweep,
+           fall back to ``yielder_start - trailing`` (matches the Java
+           behaviour — conservative parking at the entrance).
+        """
+        trailing = self.trailing_path_points
+        yielder_start, yielder_end = cs.cs_range_for(yielding.envelope_id)
+        leader_start, leader_end = cs.cs_range_for(leader.envelope_id)
+
+        if leader_current_index < leader_start:
+            return max(0, yielder_start - trailing)
+
+        leader_fps = leader.spatial_envelope.footprints
+        sweep_polys = [leader_fps[leader_current_index]]
+        if leader_current_index <= leader_end:
+            sweep_polys.extend(
+                leader_fps[i] for i in range(leader_current_index + 1, leader_end + 1)
+            )
+        leader_sweep = (
+            sweep_polys[0] if len(sweep_polys) == 1 else unary_union(sweep_polys)
+        )
+
+        yielder_fps = yielding.spatial_envelope.footprints
+        for i in range(yielder_start, yielder_end + 1):
+            if leader_sweep.intersects(yielder_fps[i]):
+                return max(0, i - trailing)
+
+        return max(0, yielder_start - trailing)
 
 
 # --------------------------------------------------------------- detection

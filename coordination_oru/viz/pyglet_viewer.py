@@ -78,11 +78,13 @@ class PygletViewer:
         width: int = 800,
         height: int = 800,
         world_size: float = 20.0,
+        world_center: tuple[float, float] = (0.0, 0.0),
         title: str = "coordination_oru",
         draw_swept_envelope: bool = True,
     ) -> None:
         self.coordinator = coordinator
         self.world_size = world_size
+        self.world_center = world_center
         self.draw_swept_envelope = draw_swept_envelope
         self.window = pyglet.window.Window(width=width, height=height, caption=title)
         self.batch = pyglet.graphics.Batch()
@@ -115,7 +117,8 @@ class PygletViewer:
         scale = self._scale()
         cx = self.window.width / 2.0
         cy = self.window.height / 2.0
-        return cx + x * scale, cy + y * scale
+        wcx, wcy = self.world_center
+        return cx + (x - wcx) * scale, cy + (y - wcy) * scale
 
     def _color_for_robot(self, robot_id: int) -> tuple[int, int, int]:
         return ROBOT_COLORS[(robot_id - 1) % len(ROBOT_COLORS)]

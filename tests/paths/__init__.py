@@ -9,8 +9,37 @@ deterministic equivalents in code. Each helper returns a tuple of
 from __future__ import annotations
 
 import math
+import pathlib
 
 from coordination_oru.metacsp.spatial.pose import Pose, PoseSteering
+
+
+REPO_PATHS_DIR = pathlib.Path(__file__).resolve().parents[2] / "paths"
+
+
+def load_path_file(name: str) -> tuple[PoseSteering, ...]:
+    """Load a coordination_oru ``.path`` file from the repo's ``paths/`` dir.
+
+    Each non-blank, non-comment line is ``x y theta [steering]`` in
+    whitespace-separated floats. Returns the parsed sequence as a tuple of
+    :class:`PoseSteering`.
+    """
+    file = REPO_PATHS_DIR / name
+    out: list[PoseSteering] = []
+    with file.open() as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            parts = stripped.split()
+            if len(parts) < 3:
+                continue
+            x, y, theta = float(parts[0]), float(parts[1]), float(parts[2])
+            steering = float(parts[3]) if len(parts) > 3 else 0.0
+            out.append(PoseSteering(Pose(x, y, theta), steering))
+    if not out:
+        raise ValueError(f"no waypoints parsed from {file}")
+    return tuple(out)
 
 
 def line_path(

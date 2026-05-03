@@ -80,7 +80,7 @@ async def test_priority_winner_actually_goes_first(
                     f"winner_idx={winner_idx}, winner_end={winner_end}, "
                     f"loser_idx={loser_idx}, loser_start={loser_start}"
                 )
-            if winner_idx <= winner_end and loser_idx == max(0, loser_start - 1):
+            if winner_idx <= winner_end and loser_idx <= max(0, loser_start - 1):
                 observed_hold = True
             if all(e.completed for e in coordinator.solver.all_envelopes()):
                 break
