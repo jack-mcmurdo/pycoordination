@@ -9,7 +9,7 @@ description = "Python port of coordination_oru: a multi-robot trajectory-envelop
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "ksatyaki" }]
-license = { text = "MIT" }
+license = { text = "GPL-3.0-or-later" }
 
 dependencies = [
     "shapely>=2.0",

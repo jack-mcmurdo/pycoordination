@@ -38,6 +38,12 @@ pip install -e .[dev]
 pytest
 ```
 
+## License
+
+GNU General Public License v3.0 or later — see [`LICENSE`](LICENSE). The
+original Java `coordination_oru` is GPL-3.0, so this port keeps the same
+licence.
+
 ## Layout
 
 ```
