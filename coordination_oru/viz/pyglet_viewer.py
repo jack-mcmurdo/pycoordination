@@ -1,4 +1,4 @@
-"""Pyglet-based visualisation for a running :class:`SimulationCoordinator`.
+"""Pyglet-based visualisation for a running :class:`TrajectoryEnvelopeCoordinatorSimulation`.
 
 The viewer takes a *snapshot* of coordinator state on every draw frame
 (60 Hz by default) and re-creates a small set of pyglet ``shapes`` from
@@ -10,13 +10,12 @@ Usage pattern (run sim in a daemon thread, viewer in the main thread):
 
 .. code-block:: python
 
-    sim = SimulationCoordinator(...)
+    tec = TrajectoryEnvelopeCoordinatorSimulation(...)
 
     async def run_sim():
-        await sim.start()
-        sim.add_rk4_robot(...)
-        await sim.run_until_idle(timeout=60.0)
-        await sim.stop()
+        await tec.startInference()
+        tec.addMissions(...)
+        ...
 
     loop = asyncio.new_event_loop()
     threading.Thread(
@@ -24,8 +23,7 @@ Usage pattern (run sim in a daemon thread, viewer in the main thread):
         daemon=True,
     ).start()
 
-    viewer = PygletViewer(sim, world_size=15.0)
-    viewer.stop_when_idle()
+    viewer = PygletViewer(tec, world_size=15.0)
     viewer.run()
 
 Layers drawn (back to front):
@@ -43,12 +41,17 @@ from typing import TYPE_CHECKING
 
 import pyglet
 from pyglet import shapes
-from shapely.geometry import Polygon
+from shapely.geometry import MultiPolygon, Polygon
 
+from coordination_oru.trajectory_envelope_tracker_dummy import (
+    TrajectoryEnvelopeTrackerDummy,
+)
 from coordination_oru.util.geometry import place_footprint
 
 if TYPE_CHECKING:
-    from coordination_oru.simulation.sim_coordinator import SimulationCoordinator
+    from coordination_oru.simulation2D.trajectory_envelope_coordinator_simulation import (
+        TrajectoryEnvelopeCoordinatorSimulation,
+    )
 
 
 ROBOT_COLORS: tuple[tuple[int, int, int], ...] = (
@@ -69,11 +72,11 @@ BACKGROUND: tuple[int, int, int, int] = (24, 24, 28, 255)
 
 
 class PygletViewer:
-    """Read-only viewer for a :class:`SimulationCoordinator`."""
+    """Read-only viewer for a :class:`TrajectoryEnvelopeCoordinatorSimulation`."""
 
     def __init__(
         self,
-        coordinator: "SimulationCoordinator",
+        coordinator: "TrajectoryEnvelopeCoordinatorSimulation",
         *,
         width: int = 800,
         height: int = 800,
@@ -99,7 +102,7 @@ class PygletViewer:
     # ------------------------------------------------------------ controls
 
     def stop_when_idle(self) -> None:
-        """Auto-close the window once every active envelope is completed."""
+        """Auto-close the window once every robot is parked (idle)."""
         self._stop_when_idle = True
 
     def run(self) -> None:
@@ -128,53 +131,60 @@ class PygletViewer:
         self._shapes.clear()
         self._labels.clear()
 
-        envelopes = list(self.coordinator.envelopes_by_robot.values())
-        trackers = self.coordinator.trackers
-        css = self.coordinator.critical_sections
-        priorities = self.coordinator.priorities
+        trackers = dict(self.coordinator.trackers)
+        css = list(self.coordinator.allCriticalSections)
 
-        active_envelopes = [e for e in envelopes if not e.completed]
-        if active_envelopes:
+        driving = {
+            robotID: tracker
+            for robotID, tracker in trackers.items()
+            if not isinstance(tracker, TrajectoryEnvelopeTrackerDummy)
+        }
+        if driving:
             self._has_been_active = True
 
         # 1. paths — faint polylines
-        for e in active_envelopes:
-            color = PATH_COLOR
+        for tracker in driving.values():
+            e = tracker.getTrajectoryEnvelope()
             for i in range(e.length - 1):
                 p0 = e.path[i].pose
                 p1 = e.path[i + 1].pose
                 x1, y1 = self._world_to_screen(p0.x, p0.y)
                 x2, y2 = self._world_to_screen(p1.x, p1.y)
                 self._shapes.append(
-                    shapes.Line(x1, y1, x2, y2, thickness=1.0, color=color, batch=self.batch)
+                    shapes.Line(x1, y1, x2, y2, thickness=1.0, color=PATH_COLOR, batch=self.batch)
                 )
 
         # 2. swept envelope outlines (faint fill)
         if self.draw_swept_envelope:
-            for e in active_envelopes:
-                geom = e.spatial_envelope.geometry
-                if not isinstance(geom, Polygon):
-                    continue
-                pts = list(geom.exterior.coords)
-                if len(pts) < 3:
-                    continue
-                screen_pts = [self._world_to_screen(x, y) for x, y in pts[:-1]]
-                rgb = self._color_for_robot(e.robot_id)
-                poly = shapes.Polygon(*screen_pts, color=rgb, batch=self.batch)
-                poly.opacity = SWEPT_OPACITY
-                self._shapes.append(poly)
+            for robotID, tracker in driving.items():
+                e = tracker.getTrajectoryEnvelope()
+                geom = e.getSpatialEnvelope().getPolygon()
+                polys = list(geom.geoms) if isinstance(geom, MultiPolygon) else [geom]
+                rgb = self._color_for_robot(robotID)
+                for poly_geom in polys:
+                    if not isinstance(poly_geom, Polygon):
+                        continue
+                    pts = list(poly_geom.exterior.coords)
+                    if len(pts) < 3:
+                        continue
+                    screen_pts = [self._world_to_screen(x, y) for x, y in pts[:-1]]
+                    poly = shapes.Polygon(*screen_pts, color=rgb, batch=self.batch)
+                    poly.opacity = SWEPT_OPACITY
+                    self._shapes.append(poly)
 
         # 3. CS index ranges highlighted on each side
         for cs in css:
-            for envelope in (cs.envelope_a, cs.envelope_b):
-                if envelope.completed:
+            for te, start, end in (
+                (cs.getTe1(), cs.getTe1Start(), cs.getTe1End()),
+                (cs.getTe2(), cs.getTe2Start(), cs.getTe2End()),
+            ):
+                if te is None or te.getRobotID() not in driving:
                     continue
-                start, end = cs.cs_range_for(envelope.envelope_id)
                 start = max(0, start)
-                end = min(end, envelope.length - 1)
+                end = min(end, te.getPathLength() - 1)
                 for i in range(start, end):
-                    p0 = envelope.path[i].pose
-                    p1 = envelope.path[i + 1].pose
+                    p0 = te.path[i].pose
+                    p1 = te.path[i + 1].pose
                     x1, y1 = self._world_to_screen(p0.x, p0.y)
                     x2, y2 = self._world_to_screen(p1.x, p1.y)
                     self._shapes.append(
@@ -183,29 +193,27 @@ class PygletViewer:
                         )
                     )
 
-        # 4. current footprints filled
-        for e in active_envelopes:
-            tracker = trackers.get(e.robot_id)
-            if tracker is None:
-                continue
-            pose = getattr(tracker, "current_pose", None)
+        # 4. current footprints filled (both driving and parked robots)
+        for robotID, tracker in trackers.items():
+            rr = tracker.getRobotReport()
+            pose = rr.getPose() if rr is not None else None
             if pose is None:
                 continue
-            fp = place_footprint(e.footprint, pose)
+            footprint = self.coordinator.getFootprint(robotID)
+            fp = place_footprint(footprint, pose)
             pts = list(fp.exterior.coords)
             if len(pts) < 3:
                 continue
             screen_pts = [self._world_to_screen(x, y) for x, y in pts[:-1]]
-            rgb = self._color_for_robot(e.robot_id)
+            rgb = self._color_for_robot(robotID)
             poly = shapes.Polygon(*screen_pts, color=rgb, batch=self.batch)
-            poly.opacity = 230
+            poly.opacity = 230 if robotID in driving else 120
             self._shapes.append(poly)
 
-            # robot id label centred on the footprint
             cxw, cyw = fp.centroid.coords[0]
             sx, sy = self._world_to_screen(cxw, cyw)
             label = pyglet.text.Label(
-                f"R{e.robot_id}",
+                f"R{robotID}",
                 x=sx,
                 y=sy,
                 anchor_x="center",
@@ -217,11 +225,9 @@ class PygletViewer:
             self._labels.append(label)
 
         # 5. status text
-        completed_count = sum(1 for e in envelopes if e.completed)
-        active_count = len(active_envelopes)
         status = (
-            f"active: {active_count}   completed: {completed_count}   "
-            f"CSes: {len(css)}   priorities: {len(priorities)}"
+            f"driving: {len(driving)}   parked: {len(trackers) - len(driving)}   "
+            f"CSes: {len(css)}   orders: {len(self.coordinator.CSToDepsOrder)}"
         )
         self._labels.append(
             pyglet.text.Label(
@@ -234,19 +240,20 @@ class PygletViewer:
             )
         )
 
-        # per-robot velocity readout (RK4 trackers expose ``v``)
+        # per-robot velocity/critical-point readout
         line_y = self.window.height - 44
-        for robot_id, tracker in sorted(trackers.items()):
-            v = getattr(tracker, "v", None)
-            permit = getattr(tracker, "permit_index_until", None)
-            if v is None and permit is None:
+        for robotID, tracker in sorted(trackers.items()):
+            state = getattr(tracker, "state", None)
+            v = state.getVelocity() if state is not None else None
+            cp = getattr(tracker, "criticalPoint", None)
+            if v is None and cp is None:
                 continue
-            r, g, b = self._color_for_robot(robot_id)
-            text = f"R{robot_id}"
+            r, g, b = self._color_for_robot(robotID)
+            text = f"R{robotID}"
             if v is not None:
                 text += f"  v={v:.2f}"
-            if permit is not None:
-                text += f"  permit={permit}"
+            if cp is not None:
+                text += f"  cp={cp}"
             self._labels.append(
                 pyglet.text.Label(
                     text,
@@ -261,5 +268,5 @@ class PygletViewer:
 
         self.batch.draw()
 
-        if self._stop_when_idle and self._has_been_active and active_count == 0:
+        if self._stop_when_idle and self._has_been_active and not driving:
             pyglet.app.exit()

@@ -29,6 +29,11 @@ def rectangular_footprint(length: float, width: float) -> Polygon:
     )
 
 
+def footprint_coords(length: float, width: float) -> tuple[tuple[float, float], ...]:
+    """Coordinates of :func:`rectangular_footprint`, for ``setFootprint(robotID, *coords)``."""
+    return tuple(rectangular_footprint(length, width).exterior.coords)[:-1]
+
+
 def place_footprint(footprint: Polygon, pose: "Pose") -> Polygon:
     """Rotate ``footprint`` (centered at origin) by ``theta`` then translate to ``pose``."""
     rotated = shapely.affinity.rotate(footprint, pose.theta, origin=(0.0, 0.0), use_radians=True)

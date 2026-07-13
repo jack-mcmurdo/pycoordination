@@ -11,56 +11,67 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from shapely.geometry import Polygon
 
-from coordination_oru.coordinator.mission import Mission
-from coordination_oru.simulation.sim_coordinator import SimulationCoordinator
-from tests.conftest import assert_no_collisions
+from coordination_oru.mission import Mission
+from coordination_oru.simulation2D.trajectory_envelope_coordinator_simulation import (
+    TrajectoryEnvelopeCoordinatorSimulation,
+)
+from tests.conftest import assert_no_collisions, wait_until_idle
 from tests.paths import two_robot_cross
 
 
 pytestmark = pytest.mark.asyncio
 
 
+def _cs_range(cs, robotID: int) -> tuple[int, int]:
+    if cs.getTe1().getRobotID() == robotID:
+        return cs.getTe1Start(), cs.getTe1End()
+    return cs.getTe2Start(), cs.getTe2End()
+
+
 async def test_two_robot_intersection(
-    coordinator: SimulationCoordinator, footprint: Polygon
+    coordinator: TrajectoryEnvelopeCoordinatorSimulation, footprint: tuple[tuple[float, float], ...]
 ) -> None:
     path_a, path_b = two_robot_cross()
-    coordinator.add_robot(Mission.make(robot_id=1, path=path_a, footprint=footprint))
-    coordinator.add_robot(Mission.make(robot_id=2, path=path_b, footprint=footprint))
+    coordinator.setFootprint(1, *footprint)
+    coordinator.setFootprint(2, *footprint)
+    coordinator.placeRobot(1, path_a[0].getPose())
+    coordinator.placeRobot(2, path_b[0].getPose())
+    coordinator.addMissions(Mission(1, path_a), Mission(2, path_b))
 
     stop = asyncio.Event()
     monitor = asyncio.create_task(assert_no_collisions(coordinator, stop))
     try:
         # Let the coordination loop run at least once before robots advance.
         await asyncio.sleep(0.05)
-        css = coordinator.critical_sections
+        css = coordinator.allCriticalSections
         assert len(css) == 1, f"expected exactly one CS, got {len(css)}"
 
-        await coordinator.run_until_idle(timeout=10.0)
+        await wait_until_idle(coordinator, timeout=10.0)
     finally:
         stop.set()
         await monitor
 
-    # Both envelopes completed, exactly one priority decision was made.
-    envelopes = coordinator.solver.all_envelopes()
-    assert all(e.completed for e in envelopes)
-    assert len(coordinator.priorities) <= 1
+    # Both robots parked again, no leftover critical sections/orders.
+    assert coordinator.allCriticalSections == set()
+    assert coordinator.CSToDepsOrder == {}
 
 
 async def test_priority_winner_actually_goes_first(
-    coordinator: SimulationCoordinator, footprint: Polygon
+    coordinator: TrajectoryEnvelopeCoordinatorSimulation, footprint: tuple[tuple[float, float], ...]
 ) -> None:
     path_a, path_b = two_robot_cross()
-    coordinator.add_robot(Mission.make(robot_id=1, path=path_a, footprint=footprint))
-    coordinator.add_robot(Mission.make(robot_id=2, path=path_b, footprint=footprint))
+    coordinator.setFootprint(1, *footprint)
+    coordinator.setFootprint(2, *footprint)
+    coordinator.placeRobot(1, path_a[0].getPose())
+    coordinator.placeRobot(2, path_b[0].getPose())
+    coordinator.addMissions(Mission(1, path_a), Mission(2, path_b))
 
-    # let the first CS get picked up
-    await asyncio.sleep(0.05)
-    [cs] = coordinator.critical_sections
-    winner_envelope_id = coordinator.priorities[cs.key]
-    loser_envelope = cs.envelope_a if cs.envelope_b.envelope_id == winner_envelope_id else cs.envelope_b
-    winner_envelope = cs.other(loser_envelope.envelope_id)
+    # let the first CS get picked up and an order decided
+    await asyncio.sleep(0.1)
+    [cs] = coordinator.allCriticalSections
+    waitingRobotID, _ = coordinator.CSToDepsOrder[cs]
+    drivingRobotID = cs.getTe1().getRobotID() if cs.getTe2().getRobotID() == waitingRobotID else cs.getTe2().getRobotID()
 
     stop = asyncio.Event()
     monitor = asyncio.create_task(assert_no_collisions(coordinator, stop))
@@ -68,23 +79,26 @@ async def test_priority_winner_actually_goes_first(
         # Watch progression: when the winner hasn't cleared the CS yet, the
         # loser must be held at or before its CS entry.
         observed_hold = False
-        for _ in range(400):
+        winner_start, winner_end = _cs_range(cs, drivingRobotID)
+        loser_start, _ = _cs_range(cs, waitingRobotID)
+        for _ in range(600):
             await asyncio.sleep(0.005)
-            winner_idx = coordinator.current_path_index(winner_envelope.robot_id)
-            loser_idx = coordinator.current_path_index(loser_envelope.robot_id)
-            _, winner_end = cs.cs_range_for(winner_envelope.envelope_id)
-            loser_start, _ = cs.cs_range_for(loser_envelope.envelope_id)
-            if winner_idx <= winner_end and loser_idx >= loser_start:
+            # A robot no longer driving has necessarily cleared every CS it
+            # was part of (idx would otherwise misleadingly read -1 = parked).
+            winner_cleared = not coordinator.isDrivingRobot(drivingRobotID)
+            winner_idx = coordinator.trackers[drivingRobotID].getRobotReport().getPathIndex()
+            loser_idx = coordinator.trackers[waitingRobotID].getRobotReport().getPathIndex()
+            if not winner_cleared and winner_idx <= winner_end and loser_idx >= loser_start:
                 pytest.fail(
                     "loser entered CS while winner had not yet cleared: "
                     f"winner_idx={winner_idx}, winner_end={winner_end}, "
                     f"loser_idx={loser_idx}, loser_start={loser_start}"
                 )
-            if winner_idx <= winner_end and loser_idx <= max(0, loser_start - 1):
+            if not winner_cleared and winner_idx <= winner_end and loser_idx <= max(0, loser_start - 1):
                 observed_hold = True
-            if all(e.completed for e in coordinator.solver.all_envelopes()):
+            if not coordinator.isDrivingRobot(1) and not coordinator.isDrivingRobot(2):
                 break
-        await coordinator.run_until_idle(timeout=5.0)
+        await wait_until_idle(coordinator, timeout=5.0)
         assert observed_hold, "loser was never observed holding short of the CS"
     finally:
         stop.set()

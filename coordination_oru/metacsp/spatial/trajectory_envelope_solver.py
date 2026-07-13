@@ -23,7 +23,7 @@ from typing import Sequence
 
 from shapely.geometry import Polygon
 
-from coordination_oru.metacsp.spatial.pose import PoseSteering
+from coordination_oru.metacsp.spatial.pose import Pose, PoseSteering
 from coordination_oru.metacsp.spatial.trajectory_envelope import (
     TrajectoryEnvelope,
     compute_spatial_envelope,
@@ -95,6 +95,31 @@ class TrajectoryEnvelopeSolver:
         )
         self._envelopes[envelope_id] = envelope
         return envelope
+
+    # ------------------------------------------------------- Java-named factories
+
+    def createEnvelopeNoParking(
+        self,
+        robotID: int,
+        path: Sequence[PoseSteering],
+        component: str,
+        footprint: Polygon,
+    ) -> TrajectoryEnvelope:
+        te = self.create_envelope(robotID, path, footprint)
+        te.component = component
+        return te
+
+    def createParkingEnvelope(
+        self,
+        robotID: int,
+        duration: int,
+        pose: "Pose",
+        location: str,
+        footprint: Polygon,
+    ) -> TrajectoryEnvelope:
+        te = self.create_envelope(robotID, (PoseSteering(pose),), footprint, nominal_duration=max(duration / 1000.0, 1e-3))
+        te.component = location
+        return te
 
     # ---------------------------------------------------------- registry view
 

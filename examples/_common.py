@@ -1,11 +1,11 @@
 """Shared runner for the example scripts.
 
-``run(sim, scenario, ...)`` opens the pyglet viewer when pyglet is installed
+``run(tec, scenario, ...)`` opens the pyglet viewer when pyglet is installed
 (``pip install -e .[viz]``); otherwise it falls back to a headless run that
 prints per-robot progress about once a second and a summary at the end.
 
 Both modes drive the same asyncio coordinator and are bounded by
-``run_until_idle(timeout=120.0)`` so a coordination bug can never hang the
+``wait_until_idle(timeout=120.0)`` so a coordination bug can never hang the
 terminal.
 """
 
@@ -15,16 +15,34 @@ import asyncio
 import threading
 from typing import Awaitable, Callable
 
-from coordination_oru.simulation.sim_coordinator import SimulationCoordinator
+from coordination_oru.simulation2D.trajectory_envelope_coordinator_simulation import (
+    TrajectoryEnvelopeCoordinatorSimulation,
+)
+from coordination_oru.trajectory_envelope_tracker_dummy import (
+    TrajectoryEnvelopeTrackerDummy,
+)
 from coordination_oru.util.logging import configure_logging
 
-Scenario = Callable[[SimulationCoordinator], Awaitable[None]]
+Scenario = Callable[[TrajectoryEnvelopeCoordinatorSimulation], Awaitable[None]]
 
 IDLE_TIMEOUT = 120.0
 
 
+async def wait_until_idle(tec: TrajectoryEnvelopeCoordinatorSimulation, timeout: float = IDLE_TIMEOUT) -> None:
+    """Block until every known robot is parked (not driving)."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        active = [robotID for robotID in tec.trackers if tec.isDrivingRobot(robotID)]
+        if not active and tec.trackers:
+            return
+        if loop.time() > deadline:
+            raise TimeoutError(f"simulation did not complete in {timeout}s; still active: {active}")
+        await asyncio.sleep(0.02)
+
+
 def run(
-    sim: SimulationCoordinator,
+    tec: TrajectoryEnvelopeCoordinatorSimulation,
     scenario: Scenario,
     *,
     world_size: float = 20.0,
@@ -42,10 +60,10 @@ def run(
             f"[{title}] pyglet not installed — running headless. "
             "For the animated viewer: pip install -e .[viz]"
         )
-        asyncio.run(_run_headless(sim, scenario, title=title))
+        asyncio.run(_run_headless(tec, scenario, title=title))
         return
     _run_viz(
-        sim,
+        tec,
         scenario,
         world_size=world_size,
         world_center=world_center,
@@ -55,52 +73,45 @@ def run(
     )
 
 
-async def _run_headless(
-    sim: SimulationCoordinator, scenario: Scenario, *, title: str
-) -> None:
-    await sim.start()
+async def _run_headless(tec: TrajectoryEnvelopeCoordinatorSimulation, scenario: Scenario, *, title: str) -> None:
+    await tec.startInference()
     try:
-        await scenario(sim)
-        progress = asyncio.create_task(_print_progress(sim))
+        await scenario(tec)
+        progress = asyncio.create_task(_print_progress(tec))
         try:
-            await sim.run_until_idle(timeout=IDLE_TIMEOUT)
+            await wait_until_idle(tec, IDLE_TIMEOUT)
         finally:
             progress.cancel()
-        _print_summary(sim, title=title)
+        _print_summary(tec, title=title)
     finally:
-        await sim.stop()
+        await tec.stopInference()
 
 
-async def _print_progress(sim: SimulationCoordinator) -> None:
+async def _print_progress(tec: TrajectoryEnvelopeCoordinatorSimulation) -> None:
     while True:
         parts = []
-        for robot_id, envelope in sorted(sim.envelopes_by_robot.items()):
-            if envelope.completed:
-                parts.append(f"robot {robot_id}: done")
+        for robotID, tracker in sorted(tec.trackers.items()):
+            if isinstance(tracker, TrajectoryEnvelopeTrackerDummy):
+                parts.append(f"robot {robotID}: parked")
                 continue
-            try:
-                idx = sim.current_path_index(robot_id)
-            except KeyError:
-                continue
-            total = len(envelope.spatial_envelope.footprints)
-            parts.append(f"robot {robot_id}: {idx + 1}/{total}")
+            rr = tracker.getRobotReport()
+            te = tracker.getTrajectoryEnvelope()
+            parts.append(f"robot {robotID}: {rr.getPathIndex() + 1}/{te.getPathLength()}")
         if parts:
             print("  " + "   ".join(parts))
         await asyncio.sleep(1.0)
 
 
-def _print_summary(sim: SimulationCoordinator, *, title: str) -> None:
-    envelopes = sim.solver.all_envelopes()
-    done = sum(1 for e in envelopes if e.completed)
+def _print_summary(tec: TrajectoryEnvelopeCoordinatorSimulation, *, title: str) -> None:
     print(
-        f"[{title}] finished: {done}/{len(envelopes)} envelopes completed, "
-        f"{len(sim.critical_sections)} critical sections still open, "
-        f"{len(sim.priorities)} priority decisions still held"
+        f"[{title}] finished: all robots parked, "
+        f"{len(tec.allCriticalSections)} critical sections still open, "
+        f"{len(tec.CSToDepsOrder)} precedence decisions still held"
     )
 
 
 def _run_viz(
-    sim: SimulationCoordinator,
+    tec: TrajectoryEnvelopeCoordinatorSimulation,
     scenario: Scenario,
     *,
     world_size: float,
@@ -112,12 +123,12 @@ def _run_viz(
     from coordination_oru.viz.pyglet_viewer import PygletViewer
 
     async def driver() -> None:
-        await sim.start()
+        await tec.startInference()
         try:
-            await scenario(sim)
-            await sim.run_until_idle(timeout=IDLE_TIMEOUT)
+            await scenario(tec)
+            await wait_until_idle(tec, IDLE_TIMEOUT)
         finally:
-            await sim.stop()
+            await tec.stopInference()
 
     loop = asyncio.new_event_loop()
 
@@ -132,7 +143,7 @@ def _run_viz(
     thread.start()
 
     viewer = PygletViewer(
-        sim,
+        tec,
         world_size=world_size,
         world_center=world_center,
         title=title,

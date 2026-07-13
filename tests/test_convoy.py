@@ -3,8 +3,8 @@
 Mirrors the Java ``getCriticalPoint`` convoy semantics: when two robots
 share a corridor in the same direction, the yielder must not be parked at
 the entrance until the leader fully exits — it should follow the leader
-through the CS at a fixed trailing buffer (``trailing_path_points``, 3 by
-default).
+through the CS at a fixed trailing buffer (3 waypoints, matching Java's
+``TRAILING_PATH_POINTS``).
 """
 
 from __future__ import annotations
@@ -12,19 +12,26 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from shapely.geometry import Polygon
 
-from coordination_oru.coordinator.mission import Mission
-from coordination_oru.simulation.sim_coordinator import SimulationCoordinator
-from tests.conftest import assert_no_collisions
+from coordination_oru.mission import Mission
+from coordination_oru.simulation2D.trajectory_envelope_coordinator_simulation import (
+    TrajectoryEnvelopeCoordinatorSimulation,
+)
+from tests.conftest import assert_no_collisions, wait_until_idle
 from tests.paths import load_path_file
 
 
 pytestmark = pytest.mark.asyncio
 
 
+def _cs_range(cs, robotID: int) -> tuple[int, int]:
+    if cs.getTe1().getRobotID() == robotID:
+        return cs.getTe1Start(), cs.getTe1End()
+    return cs.getTe2Start(), cs.getTe2End()
+
+
 async def test_yielder_follows_leader_through_shared_corridor(
-    coordinator: SimulationCoordinator, footprint: Polygon
+    coordinator: TrajectoryEnvelopeCoordinatorSimulation, footprint: tuple[tuple[float, float], ...]
 ) -> None:
     """The debug paths share a long east-bound corridor at y≈8.7.
 
@@ -33,44 +40,47 @@ async def test_yielder_follows_leader_through_shared_corridor(
     convoy following, not strict serialisation).
     """
     paths = [load_path_file(f"debug{i}.path") for i in (1, 2, 3)]
-    for robot_id, path in enumerate(paths, start=1):
-        coordinator.add_robot(
-            Mission.make(robot_id=robot_id, path=path, footprint=footprint)
-        )
+    for robotID, path in enumerate(paths, start=1):
+        coordinator.setFootprint(robotID, *footprint)
+        coordinator.placeRobot(robotID, path[0].getPose())
+    coordinator.addMissions(*[Mission(robotID, path) for robotID, path in enumerate(paths, start=1)])
 
     stop = asyncio.Event()
     monitor = asyncio.create_task(assert_no_collisions(coordinator, stop))
 
     # We track, for each CS, whether we ever saw both the leader AND the
     # yielder simultaneously inside their respective CS index ranges.
-    saw_simultaneous_in_cs: dict[frozenset[int], bool] = {}
+    saw_simultaneous_in_cs: set[object] = set()
 
     try:
         await asyncio.sleep(0.05)  # let the coordinator pick CSes
-        css = coordinator.critical_sections
+        css = coordinator.allCriticalSections
         assert css, "expected critical sections on the shared corridor"
 
-        for _ in range(2000):
+        for _ in range(3000):
             await asyncio.sleep(0.005)
-            for cs in coordinator.critical_sections:
-                winner_id = coordinator.priorities[cs.key]
-                loser = (
-                    cs.envelope_a if cs.envelope_b.envelope_id == winner_id else cs.envelope_b
-                )
-                winner = cs.other(loser.envelope_id)
-                try:
-                    li = coordinator.current_path_index(loser.robot_id)
-                    wi = coordinator.current_path_index(winner.robot_id)
-                except KeyError:
+            for cs in coordinator.allCriticalSections:
+                order = coordinator.CSToDepsOrder.get(cs)
+                if order is None:
                     continue
-                ls, le = cs.cs_range_for(loser.envelope_id)
-                ws, we = cs.cs_range_for(winner.envelope_id)
+                waitingRobotID = order[0]
+                drivingRobotID = (
+                    cs.getTe1().getRobotID() if cs.getTe2().getRobotID() == waitingRobotID else cs.getTe2().getRobotID()
+                )
+                waiting_tracker = coordinator.trackers.get(waitingRobotID)
+                driving_tracker = coordinator.trackers.get(drivingRobotID)
+                if waiting_tracker is None or driving_tracker is None:
+                    continue
+                li = waiting_tracker.getRobotReport().getPathIndex()
+                wi = driving_tracker.getRobotReport().getPathIndex()
+                ls, le = _cs_range(cs, waitingRobotID)
+                ws, we = _cs_range(cs, drivingRobotID)
                 if ls <= li <= le and ws <= wi <= we:
-                    saw_simultaneous_in_cs[cs.key] = True
-            if all(e.completed for e in coordinator.solver.all_envelopes()):
+                    saw_simultaneous_in_cs.add(cs)
+            if not any(coordinator.isDrivingRobot(rid) for rid in (1, 2, 3)):
                 break
 
-        await coordinator.run_until_idle(timeout=15.0)
+        await wait_until_idle(coordinator, timeout=15.0)
     finally:
         stop.set()
         await monitor
