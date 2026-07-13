@@ -1,0 +1,55 @@
+# Publishes the package to PyPI when a v* tag is pushed.
+#
+# Prerequisites (created manually by the repo owner before tagging a release):
+#   - a GitHub environment named "deploy"
+#   - a PYPI_API_KEY secret in that environment (a PyPI API token)
+#
+# The tag must match project.version in pyproject.toml (tag v1.2.3 ↔ version
+# 1.2.3); the guard step fails the run before anything is built otherwise.
+
+name: deploy
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: deploy
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Check tag matches pyproject version
+        run: |
+          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag_version" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match pyproject.toml version ${version} — bump the version before tagging"
+            exit 1
+          fi
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Twine check
+        run: twine check dist/*
+
+      - name: Smoke-test the wheel
+        run: |
+          pip install dist/*.whl
+          python -c "from coordination_oru.util.paths import load_path_file; assert len(load_path_file('debug1.path')) > 0"
+
+      - name: Upload to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_KEY }}
+        run: twine upload dist/*

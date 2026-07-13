@@ -32,18 +32,18 @@ Only `debug1/2/3.path` are actually consumed (convoy + oldpath scenarios); the r
 ## Milestone 1 — standalone examples
 
 ### Steps
-- [ ] Create `coordination_oru/data/`: `git mv` the three debug `.path` files in, delete the rest of `paths/`, add the package-data entry to `pyproject.toml`.
-- [ ] Move path helpers to `coordination_oru/util/paths.py` (loader switched to `importlib.resources`); shim `tests/paths/__init__.py`; run `pytest` to confirm the suite is green untouched. This step must precede the example scripts — it is what lets them avoid `tests.*` imports.
-- [ ] Create `examples/_common.py` with `run_viz` + headless fallback; delete `tests/manual/`.
-- [ ] Port the three viz scripts to `examples/` and write the two new example scripts (`convoy.py`, `dynamic_missions.py`).
-- [ ] Verify: `grep -rn "tests" examples/` returns nothing; each example runs headless (`python examples/<name>.py` with pyglet absent or a forced ImportError) and with viz; `three_robots_oldpath.py` works from a wheel install (`pip install .` into a scratch venv).
-- [ ] Update `README.md`.
+- [x] Create `coordination_oru/data/`: `git mv` the three debug `.path` files in, delete the rest of `paths/`, add the package-data entry to `pyproject.toml`.
+- [x] Move path helpers to `coordination_oru/util/paths.py` (loader switched to `importlib.resources`); shim `tests/paths/__init__.py`; run `pytest` to confirm the suite is green untouched. This step must precede the example scripts — it is what lets them avoid `tests.*` imports.
+- [x] Create `examples/_common.py` with `run_viz` + headless fallback; delete `tests/manual/`.
+- [x] Port the three viz scripts to `examples/` and write the two new example scripts (`convoy.py`, `dynamic_missions.py`).
+- [x] Verify: `grep -rn "tests" examples/` returns nothing; each example runs headless (`python examples/<name>.py` with pyglet absent or a forced ImportError) and with viz; `three_robots_oldpath.py` works from a wheel install (`pip install .` into a scratch venv).
+- [x] Update `README.md`.
 
 ## Milestone 2 — PyPI deploy workflow
 
 ### Steps
-- [ ] Add `.github/workflows/deploy.yml` exactly as specified in Changes (tag/version guard, build, `twine check`, wheel smoke test, upload).
-- [ ] Run workflow steps 2–4 locally verbatim (with `GITHUB_REF_NAME=v0.1.0`): version guard passes, `python -m build` + `twine check dist/*` pass, wheel smoke test confirms `coordination_oru/data/*.path` ships in the wheel. Also run the guard once with a deliberately wrong tag to confirm it fails.
+- [x] Add `.github/workflows/deploy.yml` exactly as specified in Changes (tag/version guard, build, `twine check`, wheel smoke test, upload).
+- [x] Run workflow steps 2–4 locally verbatim (with `GITHUB_REF_NAME=v0.1.0`): version guard passes, `python -m build` + `twine check dist/*` pass, wheel smoke test confirms `coordination_oru/data/*.path` ships in the wheel. Also run the guard once with a deliberately wrong tag to confirm it fails.
 
 ## Protocol
 One commit per milestone, two total.

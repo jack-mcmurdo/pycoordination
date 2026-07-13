@@ -44,3 +44,4 @@ Thumbs.db
 # (none yet — uncomment when needed)
 # *.log
 # /scratch/
+dist/
