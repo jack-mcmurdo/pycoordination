@@ -1,8 +1,12 @@
-"""Manual viz scenario: two RK4 robots with perpendicular paths.
+"""Two RK4 robots with perpendicular paths crossing at the origin.
 
-Run from the repo root:
+The coordinator detects the single critical section at the crossing, gives
+one robot priority, and holds the other short of the intersection until the
+winner clears it.
 
-    .venv/bin/python -m tests.manual.two_robots_viz
+Run:
+
+    python examples/two_robots.py
 """
 
 from __future__ import annotations
@@ -12,8 +16,9 @@ import asyncio
 from coordination_oru.coordinator.mission import Mission
 from coordination_oru.simulation.sim_coordinator import SimulationCoordinator
 from coordination_oru.util.geometry import rectangular_footprint
-from tests.manual._runner import run_viz
-from tests.paths import two_robot_cross
+from coordination_oru.util.paths import two_robot_cross
+
+from _common import run
 
 
 async def scenario(sim: SimulationCoordinator) -> None:
@@ -31,4 +36,4 @@ async def scenario(sim: SimulationCoordinator) -> None:
 
 if __name__ == "__main__":
     sim = SimulationCoordinator(period=0.02, sim_step_period=0.02)
-    run_viz(sim, scenario, world_size=14.0, title="two robots — RK4")
+    run(sim, scenario, world_size=14.0, title="two robots — RK4")

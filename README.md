@@ -32,6 +32,24 @@ are dropped.
 pip install -e .[dev]
 ```
 
+## Examples
+
+Each example is a standalone script — run it directly with Python. With the
+`viz` extra installed (`pip install -e .[viz]`) it opens an animated pyglet
+viewer; without it, it runs headless and prints per-robot progress.
+
+```bash
+python examples/two_robots.py
+```
+
+| Script                            | Scenario                                                          |
+| --------------------------------- | ----------------------------------------------------------------- |
+| `examples/two_robots.py`          | Two RK4 robots cross at the origin; one yields at the intersection. |
+| `examples/three_robots.py`        | Three RK4 robots through one intersection, deadlock-free.          |
+| `examples/three_robots_oldpath.py`| The original Java repo's `debug1/2/3.path` recorded paths.         |
+| `examples/convoy.py`              | Convoy following: a yielder trails the leader inside a shared corridor. |
+| `examples/dynamic_missions.py`    | Robots get new missions after finishing their first ones.          |
+
 ## Run the tests
 
 ```bash
@@ -53,5 +71,7 @@ coordination_oru/
 │   └── spatial/   # Pose, TrajectoryEnvelope, TrajectoryEnvelopeSolver
 ├── coordinator/   # Critical-section detection, ordering, deadlock check
 ├── simulation/    # In-process simulator with hardcoded paths
-└── util/          # Footprint helpers, structlog setup
+├── data/          # Bundled demo .path files (ship with the wheel)
+└── util/          # Footprint helpers, path loaders/generators, structlog setup
+examples/          # Standalone runnable demos (python examples/<name>.py)
 ```

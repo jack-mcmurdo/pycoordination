@@ -1,8 +1,12 @@
-"""Manual viz scenario: three RK4 robots crossing at the origin.
+"""Three RK4 robots whose paths all pass through the origin.
 
-Run from the repo root:
+Each pair of paths crosses at the origin, so the coordinator must resolve
+three pairwise critical sections and serialise the robots through the
+intersection without deadlock.
 
-    .venv/bin/python -m tests.manual.three_robots_viz
+Run:
+
+    python examples/three_robots.py
 """
 
 from __future__ import annotations
@@ -12,8 +16,9 @@ import asyncio
 from coordination_oru.coordinator.mission import Mission
 from coordination_oru.simulation.sim_coordinator import SimulationCoordinator
 from coordination_oru.util.geometry import rectangular_footprint
-from tests.manual._runner import run_viz
-from tests.paths import three_robot_intersection
+from coordination_oru.util.paths import three_robot_intersection
+
+from _common import run
 
 
 async def scenario(sim: SimulationCoordinator) -> None:
@@ -27,4 +32,4 @@ async def scenario(sim: SimulationCoordinator) -> None:
 
 if __name__ == "__main__":
     sim = SimulationCoordinator(period=0.02, sim_step_period=0.02)
-    run_viz(sim, scenario, world_size=22.0, title="three robots — RK4")
+    run(sim, scenario, world_size=22.0, title="three robots — RK4")

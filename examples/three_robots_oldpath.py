@@ -1,11 +1,13 @@
-"""Manual viz for the three debug paths from the original Java repo.
+"""Three robots on the original Java repo's debug1/2/3.path files.
 
-Paths span roughly x ∈ [15, 42], y ∈ [3, 17]; the viewer is centred on the
-midpoint of that bounding box.
+The three paths enter from the north at different x offsets, drop down, and
+share a long east-bound corridor at y ≈ 8.7 — overlapping convoy lanes rather
+than a perpendicular crossing. The path files ship as package data, so this
+also works from an installed wheel.
 
-Run from the repo root:
+Run:
 
-    .venv/bin/python -m tests.manual.three_robots_oldpath_viz
+    python examples/three_robots_oldpath.py
 """
 
 from __future__ import annotations
@@ -13,13 +15,17 @@ from __future__ import annotations
 import asyncio
 
 from coordination_oru.coordinator.mission import Mission
+from coordination_oru.metacsp.spatial.pose import PoseSteering
 from coordination_oru.simulation.sim_coordinator import SimulationCoordinator
 from coordination_oru.util.geometry import rectangular_footprint
-from tests.manual._runner import run_viz
-from tests.paths import load_path_file
+from coordination_oru.util.paths import load_path_file
+
+from _common import run
 
 
-def _bbox(paths: list[tuple]) -> tuple[float, float, float, float]:
+def _bbox(
+    paths: list[tuple[PoseSteering, ...]],
+) -> tuple[float, float, float, float]:
     xs = [ps.pose.x for p in paths for ps in p]
     ys = [ps.pose.y for p in paths for ps in p]
     return min(xs), min(ys), max(xs), max(ys)
@@ -42,7 +48,7 @@ if __name__ == "__main__":
     span = max(maxx - minx, maxy - miny) * 1.1  # 10% margin
 
     sim = SimulationCoordinator(period=0.02, sim_step_period=0.02)
-    run_viz(
+    run(
         sim,
         scenario,
         world_size=span,
