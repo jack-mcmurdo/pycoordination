@@ -42,6 +42,20 @@ viewer; without it, it runs headless and prints per-robot progress.
 python examples/two_robots.py
 ```
 
+Every example also accepts a viewer flag — no per-script setup needed:
+
+```bash
+python examples/two_robots.py --web-viewer   # browser-based viewer
+python examples/two_robots.py --pyglet       # force the pyglet window
+python examples/two_robots.py --headless     # force the text-only run
+```
+
+`--web-viewer` serves a Vite + React frontend on http://127.0.0.1:8723/
+(`--port` to change, `--no-browser` to not auto-open) with live paths, swept
+envelopes, critical-section highlights, footprints, zoom/pan, and dark mode.
+PyPI wheels ship the frontend prebuilt; in a source checkout build it once
+with `npm --prefix frontend install && npm --prefix frontend run build`.
+
 | Script                            | Scenario                                                          |
 | --------------------------------- | ----------------------------------------------------------------- |
 | `examples/two_robots.py`          | Two RK4 robots cross at the origin; one yields at the intersection. |

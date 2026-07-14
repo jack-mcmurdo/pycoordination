@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "coordination-oru"
-version = "0.3.0"
+version = "0.4.0"
 description = "Python port of coordination_oru: a multi-robot trajectory-envelope coordinator."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -27,11 +27,16 @@ future = [
 ]
 viz = [
     "pyglet>=2.1",
+    "starlette>=0.37",
+    "uvicorn>=0.29",
 ]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "mypy>=1.8",
+    "starlette>=0.37",
+    "uvicorn>=0.29",
+    "httpx2>=2.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -39,6 +44,8 @@ include = ["coordination_oru*"]
 
 [tool.setuptools.package-data]
 "coordination_oru.data" = ["*.path"]
+# web viewer frontend build (gitignored; built by npm before packaging)
+"coordination_oru.viz" = ["static/**"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

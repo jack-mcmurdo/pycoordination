@@ -41,7 +41,7 @@ coverage.xml
 Thumbs.db
 
 # Project-specific
-# (none yet — uncomment when needed)
-# *.log
-# /scratch/
+# web viewer: vite build output (built locally / in CI, shipped in the wheel)
+coordination_oru/viz/static/
+frontend/node_modules/
 dist/
