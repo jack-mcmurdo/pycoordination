@@ -32,12 +32,15 @@ from coordination_oru.robot_report import RobotReport
 from coordination_oru.simulation2D.derivative import Derivative
 from coordination_oru.simulation2D.state import State
 from coordination_oru.tracking_callback import TrackingCallback
+from coordination_oru.util.logging import get_logger
 
 if TYPE_CHECKING:
     from coordination_oru.abstract_trajectory_envelope_coordinator import (
         AbstractTrajectoryEnvelopeCoordinator,
     )
     from coordination_oru.metacsp.spatial.trajectory_envelope import TrajectoryEnvelope
+
+log = get_logger(__name__)
 
 WAIT_AMOUNT_AT_END_MILLIS = 3000
 EPSILON = 0.01
@@ -249,7 +252,13 @@ class TrajectoryEnvelopeTrackerRK4(AbstractTrajectoryEnvelopeTracker):
     def setCriticalPoint(self, criticalPointToSet: int) -> None:
         if self.criticalPoint != criticalPointToSet:
             current_path_index = self.getRobotReport().getPathIndex()
-            if criticalPointToSet != -1 and criticalPointToSet > current_path_index:
+            # ``>=`` (Java uses ``>``): a robot standing exactly at the
+            # requested waypoint can still honour the hold — this matters for
+            # missions that begin inside a critical section, where the first
+            # critical point equals the start index 0. The rollback below
+            # still rejects the request when the robot is already rolling
+            # past the waypoint.
+            if criticalPointToSet != -1 and criticalPointToSet >= current_path_index:
                 total_distance_bkp = self.totalDistance
                 critical_point_bkp = self.criticalPoint
                 position_to_slow_down_bkp = self.positionToSlowDown
@@ -262,8 +271,13 @@ class TrajectoryEnvelopeTrackerRK4(AbstractTrajectoryEnvelopeTracker):
                     self.criticalPoint = critical_point_bkp
                     self.totalDistance = total_distance_bkp
                     self.positionToSlowDown = position_to_slow_down_bkp
-            elif criticalPointToSet != -1 and criticalPointToSet <= current_path_index:
-                pass
+            elif criticalPointToSet != -1 and criticalPointToSet < current_path_index:
+                log.warning(
+                    "ignored_late_critical_point",
+                    robotID=self.te.getRobotID(),
+                    criticalPoint=criticalPointToSet,
+                    pathIndex=current_path_index,
+                )
             elif criticalPointToSet == -1:
                 self.criticalPoint = criticalPointToSet
                 self.totalDistance = computeDistance(self.traj, 0, len(self.traj.getPose()) - 1)

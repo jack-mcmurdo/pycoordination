@@ -63,6 +63,7 @@ with `npm --prefix frontend install && npm --prefix frontend run build`.
 | `examples/three_robots_oldpath.py`| The original Java repo's `debug1/2/3.path` recorded paths.         |
 | `examples/convoy.py`              | Convoy following: a yielder trails the leader inside a shared corridor. |
 | `examples/dynamic_missions.py`    | Robots get new missions after finishing their first ones.          |
+| `examples/five_robots_sine.py`    | Five robots on interleaved sine/cosine waves whose crossings form a lattice of critical sections. |
 
 ## Run the tests
 

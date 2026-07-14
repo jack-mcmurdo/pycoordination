@@ -18,12 +18,14 @@ export interface StaticMessage {
   title: string;
   world: { size: number; center: Point };
   robots: StaticRobot[];
+  footprints: { id: number; ring: Ring }[];
 }
 
 export interface RobotState {
   id: number;
   driving: boolean;
-  footprint: Ring;
+  /** [x, y, theta] — the frontend places the static footprint outline here. */
+  pose: [number, number, number];
   pathIndex: number;
   pathLength?: number;
   velocity: number;
@@ -39,12 +41,19 @@ export interface CriticalSectionState {
   end2: number;
 }
 
+export interface DependencyState {
+  waiting: number;
+  driving: number;
+  waitingPoint: number;
+}
+
 export interface StateMessage {
   kind: "state";
   seq: number;
   ts: number;
   robots: RobotState[];
   criticalSections: CriticalSectionState[];
+  dependencies: DependencyState[];
   counts: {
     driving: number;
     parked: number;

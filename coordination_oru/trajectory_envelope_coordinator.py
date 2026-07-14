@@ -67,6 +67,7 @@ class TrajectoryEnvelopeCoordinator(AbstractTrajectoryEnvelopeCoordinator):
         self.currentOrdersHeurusticallyDecided = 0
         self.nonliveCyclesOld: list[list[int]] = []
         self.replanningTrialsCounter = 0
+        self._noPlannerWarned: set[int] = set()
         self.successfulReplanningTrialsCounter = 0
         self.forceCriticalPointReTransmission: dict[int, bool] = {}
 
@@ -247,6 +248,22 @@ class TrajectoryEnvelopeCoordinator(AbstractTrajectoryEnvelopeCoordinator):
                 drivingCSEnd = cs.getTe1End() if drivingRobotID == cs.getTe1().getRobotID() else cs.getTe2End()
 
                 assert waitingTE is not None
+                # Only reverse if the newly-waiting robot can still honour the
+                # new waiting point (which sits TRAILING_PATH_POINTS before
+                # the conflict, i.e. earlier than the CS start its
+                # reversibility was judged against). Otherwise its tracker
+                # would silently reject the critical point and both robots
+                # would enter the critical section.
+                newWaitingTracker = self.trackers.get(waitingRobotID)
+                if newWaitingTracker is not None:
+                    newWaitingReport = currentReports[waitingRobotID]
+                    earliest = {
+                        waitingRobotID: self.getForwardModel(waitingRobotID).getEarliestStoppingPathIndex(
+                            waitingTE, newWaitingReport
+                        )
+                    }
+                    if not self._canStop(newWaitingTracker, newWaitingReport, waitingPoint + 1, earliest):
+                        continue
                 revDep = Dependency(waitingTE, drivingTE, waitingPoint, drivingCSEnd)
 
                 allDepsTmp = {rid: set(deps) for rid, deps in allDeps.items()}
@@ -343,6 +360,15 @@ class TrajectoryEnvelopeCoordinator(AbstractTrajectoryEnvelopeCoordinator):
         return self.spawnReplanning(robotsToReplan, allConnectedRobots)
 
     def spawnReplanning(self, robotsToReplan: set[int], allConnectedRobots: set[int]) -> bool:
+        if not any(robotID in self.motionPlanners for robotID in robotsToReplan):
+            # Nothing can be replanned. Without this guard a plannerless sim
+            # (e.g. the examples) re-logs the spawn every control period for
+            # as long as the blocked cycle persists.
+            unwarned = robotsToReplan - self._noPlannerWarned
+            if unwarned:
+                log.warning("no_motion_planner_for_replan", robots=sorted(robotsToReplan))
+                self._noPlannerWarned |= unwarned
+            return False
         if self.setMaxCPDependencies(robotsToReplan):
             log.info("spawning_replan", robots=sorted(robotsToReplan), connected=sorted(allConnectedRobots))
             self.rePlanPath(robotsToReplan, allConnectedRobots)
@@ -1185,6 +1211,17 @@ class TrajectoryEnvelopeCoordinator(AbstractTrajectoryEnvelopeCoordinator):
             waitingTracker = robotTracker2 if robot2Yields else robotTracker1
             waitingPoint = self.getCriticalPoint(waitingTracker.getTrajectoryEnvelope().getRobotID(), cs, drivingCurrentIndex)
             if waitingPoint < 0:
+                continue
+            # same guard as in the nonlive-cycle repair: never reverse onto a
+            # robot that can no longer stop at the new waiting point
+            newWaitingRobotID = waitingTracker.getTrajectoryEnvelope().getRobotID()
+            newWaitingReport = currentReports[newWaitingRobotID]
+            earliest = {
+                newWaitingRobotID: self.getForwardModel(newWaitingRobotID).getEarliestStoppingPathIndex(
+                    waitingTracker.getTrajectoryEnvelope(), newWaitingReport
+                )
+            }
+            if not self._canStop(waitingTracker, newWaitingReport, waitingPoint + 1, earliest):
                 continue
 
             backupGraph = self.currentOrdersGraph.copy()

@@ -85,3 +85,26 @@ def three_robot_intersection() -> tuple[
 
 def shuttle_path(start: tuple[float, float], end: tuple[float, float]) -> tuple[PoseSteering, ...]:
     return line_path(start[0], start[1], end[0], end[1])
+
+
+def sine_path(
+    y_offset: float,
+    *,
+    amplitude: float = 3.0,
+    phase: float = 0.0,
+    length: float = 24.0,
+    period: float = 12.0,
+    step: float = 0.25,
+) -> tuple[PoseSteering, ...]:
+    """Sample ``y = y_offset + amplitude * sin(2πx/period + phase)`` from
+    x = 0 to ``length`` at ``step``-metre x-spacing, headings tangent to
+    the curve."""
+    k = 2.0 * math.pi / period
+    n = max(2, int(math.ceil(length / step)) + 1)
+    out: list[PoseSteering] = []
+    for i in range(n):
+        x = i * (length / (n - 1))
+        y = y_offset + amplitude * math.sin(k * x + phase)
+        theta = math.atan2(amplitude * k * math.cos(k * x + phase), 1.0)
+        out.append(PoseSteering(Pose(x, y, theta)))
+    return tuple(out)

@@ -1,26 +1,21 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Maximize } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { robotColor } from "@/lib/robot-colors";
-import type { Point } from "@/lib/protocol";
+import type { CriticalSectionState, Point, StaticMessage } from "@/lib/protocol";
 import { useVizStore } from "@/store";
 
 const CS_COLOR = "rgb(240, 90, 90)";
+const ARROW_COLOR = "rgb(240, 90, 90)";
+// slightly longer than one 20 Hz server tick so consecutive poses blend
+const POSE_TRANSITION = "transform 120ms linear";
 
 // World is y-up, SVG is y-down: negate y on every coordinate.
 function toPoints(points: Point[]): string {
   return points.map(([x, y]) => `${x},${-y}`).join(" ");
 }
 
-function centroid(points: Point[]): Point {
-  let cx = 0;
-  let cy = 0;
-  for (const [x, y] of points) {
-    cx += x;
-    cy += y;
-  }
-  return [cx / points.length, cy / points.length];
-}
+const RAD_TO_DEG = 180 / Math.PI;
 
 interface ViewBox {
   x: number;
@@ -28,6 +23,84 @@ interface ViewBox {
   w: number;
   h: number;
 }
+
+/** Paths and swept envelopes: only re-rendered when a new static message
+ * arrives, not on every 20 Hz state tick (large point strings). */
+const StaticLayers = memo(function StaticLayers({
+  staticData,
+  stroke,
+}: {
+  staticData: StaticMessage;
+  stroke: number;
+}) {
+  return (
+    <>
+      {staticData.robots.map((robot) =>
+        robot.envelope.map((ring, i) => (
+          <polygon
+            key={`env-${robot.id}-${i}`}
+            points={toPoints(ring)}
+            fill={robotColor(robot.id)}
+            fillOpacity={0.11}
+          />
+        )),
+      )}
+      {staticData.robots.map((robot) => (
+        <polyline
+          key={`path-${robot.id}`}
+          points={toPoints(robot.path)}
+          fill="none"
+          stroke="currentColor"
+          strokeOpacity={0.3}
+          strokeWidth={stroke}
+        />
+      ))}
+    </>
+  );
+});
+
+/** Critical-section highlights: re-rendered only when the CS set changes
+ * (the index ranges are static per CS, robots moving doesn't affect them). */
+const CriticalSectionLayer = memo(
+  function CriticalSectionLayer({
+    criticalSections,
+    paths,
+    stroke,
+  }: {
+    criticalSections: CriticalSectionState[];
+    paths: Map<number, Point[]>;
+    stroke: number;
+  }) {
+    return (
+      <>
+        {criticalSections.map((cs, i) => {
+          const sides = [
+            { robot: cs.robot1, start: cs.start1, end: cs.end1 },
+            { robot: cs.robot2, start: cs.start2, end: cs.end2 },
+          ];
+          return sides.map(({ robot, start, end }, side) => {
+            const path = paths.get(robot);
+            if (!path || end <= start) return null;
+            return (
+              <polyline
+                key={`cs-${i}-${side}`}
+                points={toPoints(path.slice(start, end + 1))}
+                fill="none"
+                stroke={CS_COLOR}
+                strokeOpacity={0.8}
+                strokeWidth={stroke * 3}
+              />
+            );
+          });
+        })}
+      </>
+    );
+  },
+  (prev, next) =>
+    prev.stroke === next.stroke &&
+    prev.paths === next.paths &&
+    JSON.stringify(prev.criticalSections) === JSON.stringify(next.criticalSections),
+);
 
 export function WorldView() {
   const staticData = useVizStore((s) => s.staticData);
@@ -53,6 +126,18 @@ export function WorldView() {
     for (const robot of staticData?.robots ?? []) byRobot.set(robot.id, robot.path);
     return byRobot;
   }, [staticData]);
+
+  const outlines = useMemo(() => {
+    const byRobot = new Map<number, string>();
+    for (const fp of staticData?.footprints ?? []) byRobot.set(fp.id, toPoints(fp.ring));
+    return byRobot;
+  }, [staticData]);
+
+  const poses = useMemo(() => {
+    const byRobot = new Map<number, [number, number, number]>();
+    for (const robot of state?.robots ?? []) byRobot.set(robot.id, robot.pose);
+    return byRobot;
+  }, [state]);
 
   const drag = useRef<{ x: number; y: number; captured: boolean } | null>(null);
   const DRAG_THRESHOLD_PX = 4;
@@ -125,78 +210,90 @@ export function WorldView() {
         onPointerCancel={onPointerUp}
         className="cursor-grab touch-none active:cursor-grabbing"
       >
-        {/* 1. swept envelopes — very faint fill */}
-        {staticData.robots.map((robot) =>
-          robot.envelope.map((ring, i) => (
-            <polygon
-              key={`env-${robot.id}-${i}`}
-              points={toPoints(ring)}
-              fill={robotColor(robot.id)}
-              fillOpacity={0.11}
+        <defs>
+          <marker
+            id="dep-arrow"
+            viewBox="0 0 10 10"
+            refX="9"
+            refY="5"
+            markerWidth="7"
+            markerHeight="7"
+            orient="auto-start-reverse"
+          >
+            <path d="M 0 0 L 10 5 L 0 10 z" fill={ARROW_COLOR} />
+          </marker>
+        </defs>
+
+        <StaticLayers staticData={staticData} stroke={stroke} />
+        <CriticalSectionLayer
+          criticalSections={state?.criticalSections ?? []}
+          paths={paths}
+          stroke={stroke}
+        />
+
+        {/* dependency arrows: yielder → leader */}
+        {state?.dependencies.map((dep, i) => {
+          const from = poses.get(dep.waiting);
+          const to = poses.get(dep.driving);
+          if (!from || !to) return null;
+          return (
+            <line
+              key={`dep-${i}`}
+              x1={from[0]}
+              y1={-from[1]}
+              x2={to[0]}
+              y2={-to[1]}
+              stroke={ARROW_COLOR}
+              strokeWidth={stroke * 1.5}
+              strokeDasharray={`${stroke * 6} ${stroke * 3}`}
+              markerEnd="url(#dep-arrow)"
+              style={{ transition: POSE_TRANSITION }}
             />
-          )),
-        )}
-
-        {/* 2. paths — faint polylines */}
-        {staticData.robots.map((robot) => (
-          <polyline
-            key={`path-${robot.id}`}
-            points={toPoints(robot.path)}
-            fill="none"
-            stroke="currentColor"
-            strokeOpacity={0.3}
-            strokeWidth={stroke}
-          />
-        ))}
-
-        {/* 3. critical-section index ranges highlighted on each path */}
-        {state?.criticalSections.map((cs, i) => {
-          const sides = [
-            { robot: cs.robot1, start: cs.start1, end: cs.end1 },
-            { robot: cs.robot2, start: cs.start2, end: cs.end2 },
-          ];
-          return sides.map(({ robot, start, end }, side) => {
-            const path = paths.get(robot);
-            if (!path || end <= start) return null;
-            return (
-              <polyline
-                key={`cs-${i}-${side}`}
-                points={toPoints(path.slice(start, end + 1))}
-                fill="none"
-                stroke={CS_COLOR}
-                strokeOpacity={0.8}
-                strokeWidth={stroke * 3}
-              />
-            );
-          });
+          );
         })}
 
-        {/* 4. current footprints + labels */}
+        {/* footprints: static outline placed at the live pose; the CSS
+            transition interpolates between 20 Hz server ticks */}
         {state?.robots.map((robot) => {
-          const [cx, cy] = centroid(robot.footprint);
+          const outline = outlines.get(robot.id);
+          if (!outline) return null;
+          const [x, y, theta] = robot.pose;
           return (
-            <g key={`robot-${robot.id}`}>
+            <g
+              key={`robot-${robot.id}`}
+              style={{
+                transform: `translate(${x}px, ${-y}px) rotate(${-theta * RAD_TO_DEG}deg)`,
+                transition: POSE_TRANSITION,
+              }}
+            >
               <polygon
-                points={toPoints(robot.footprint)}
+                points={outline}
                 fill={robotColor(robot.id)}
                 fillOpacity={robot.driving ? 0.9 : 0.45}
                 stroke={robotColor(robot.id)}
                 strokeWidth={stroke / 2}
               />
-              <text
-                x={cx}
-                y={-cy}
-                textAnchor="middle"
-                dominantBaseline="central"
-                fontSize={labelSize}
-                fill="rgb(10, 10, 10)"
-                className="pointer-events-none select-none"
-              >
-                R{robot.id}
-              </text>
             </g>
           );
         })}
+
+        {/* labels: translate-only so text stays upright */}
+        {state?.robots.map((robot) => (
+          <text
+            key={`label-${robot.id}`}
+            textAnchor="middle"
+            dominantBaseline="central"
+            fontSize={labelSize}
+            fill="rgb(10, 10, 10)"
+            className="pointer-events-none select-none"
+            style={{
+              transform: `translate(${robot.pose[0]}px, ${-robot.pose[1]}px)`,
+              transition: POSE_TRANSITION,
+            }}
+          >
+            R{robot.id}
+          </text>
+        ))}
       </svg>
       <Button
         size="icon"

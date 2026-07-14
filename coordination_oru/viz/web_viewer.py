@@ -11,18 +11,23 @@ Wire protocol (all messages carry ``seq``, monotonic int, and ``ts``, unix
 ms):
 
 - ``{"kind": "static", "title", "world": {"size", "center"}, "robots":
-  [{"id", "envelopeID", "path": [[x, y], ...], "envelope": [ring, ...]}]}``
-  — per-robot path polyline and swept-envelope polygon rings for every
-  *driving* robot. Sent on client connect and whenever the set of driving
-  envelopes changes (missions start/finish). Paths are the heavy payload,
-  so they are only re-sent on change.
-- ``{"kind": "state", "robots": [{"id", "driving", "footprint": ring,
+  [{"id", "envelopeID", "path": [[x, y], ...], "envelope": [ring, ...]}],
+  "footprints": [{"id", "ring"}]}`` — per-robot path polyline and
+  swept-envelope polygon rings for every *driving* robot, plus each known
+  robot's footprint outline centered at the origin. Sent on client connect
+  and whenever the set of robots or driving envelopes changes (missions
+  start/finish). Paths are the heavy payload, so they are only re-sent on
+  change.
+- ``{"kind": "state", "robots": [{"id", "driving", "pose": [x, y, theta],
   "pathIndex", "pathLength", "velocity", "criticalPoint"}],
   "criticalSections": [{"robot1", "start1", "end1", "robot2", "start2",
-  "end2"}], "counts": {"driving", "parked", "criticalSections",
-  "orders"}}`` — sent every poll tick (``poll_hz``). Footprints are placed
-  server-side; critical sections reference path indices into the static
-  paths, the frontend slices the highlight segments from those.
+  "end2"}], "dependencies": [{"waiting", "driving", "waitingPoint"}],
+  "counts": {"driving", "parked", "criticalSections", "orders"}}`` — sent
+  every poll tick (``poll_hz``). The frontend places the static footprint
+  outline at ``pose`` (translate+rotate, cheap enough to CSS-animate);
+  critical sections reference path indices into the static paths, the
+  frontend slices the highlight segments from those; ``dependencies`` are
+  the current yielder → leader precedence orders.
 
 The server runs *inside* the simulation's asyncio event loop (the
 coordinator is asyncio-native, so no thread bridge is needed): create the
@@ -47,7 +52,6 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from coordination_oru.trajectory_envelope_tracker_dummy import (
     TrajectoryEnvelopeTrackerDummy,
 )
-from coordination_oru.util.geometry import place_footprint
 
 if TYPE_CHECKING:
     from shapely.geometry.base import BaseGeometry
@@ -105,6 +109,17 @@ def driving_envelope_ids(
     }
 
 
+def static_content_key(
+    coordinator: "AbstractTrajectoryEnvelopeCoordinator",
+) -> tuple[frozenset[int], tuple[tuple[int, int], ...]]:
+    """Changes exactly when the static message content would: a robot
+    appears, or the set of driving envelopes changes."""
+    return (
+        frozenset(coordinator.trackers),
+        tuple(sorted(driving_envelope_ids(coordinator).items())),
+    )
+
+
 def build_static_message(
     coordinator: "AbstractTrajectoryEnvelopeCoordinator",
     *,
@@ -128,11 +143,25 @@ def build_static_message(
                 "envelope": _rings(e.getSpatialEnvelope().getPolygon()),
             }
         )
+    footprints = []
+    for robotID in sorted(dict(coordinator.trackers)):
+        outline = coordinator.getFootprint(robotID)
+        if outline is None:
+            continue
+        footprints.append(
+            {
+                "id": robotID,
+                "ring": [
+                    [round(x, 3), round(y, 3)] for x, y in outline.exterior.coords[:-1]
+                ],
+            }
+        )
     return {
         "kind": "static",
         "title": title,
         "world": {"size": world_size, "center": list(world_center)},
         "robots": robots,
+        "footprints": footprints,
     }
 
 
@@ -154,13 +183,10 @@ def build_state_message(
         pose = rr.getPose() if rr is not None else None
         if pose is None:
             continue
-        footprint = place_footprint(coordinator.getFootprint(robotID), pose)
         entry: dict[str, Any] = {
             "id": robotID,
             "driving": robotID in driving,
-            "footprint": [
-                [round(x, 3), round(y, 3)] for x, y in footprint.exterior.coords[:-1]
-            ],
+            "pose": [round(pose.getX(), 4), round(pose.getY(), 4), round(pose.getTheta(), 4)],
             "pathIndex": rr.getPathIndex(),
             "velocity": round(rr.getVelocity(), 3),
             "criticalPoint": rr.getCriticalPoint(),
@@ -168,6 +194,16 @@ def build_state_message(
         if robotID in driving:
             entry["pathLength"] = tracker.getTrajectoryEnvelope().getPathLength()
         robots.append(entry)
+
+    dependencies = [
+        {
+            "waiting": dep.getWaitingRobotID(),
+            "driving": dep.getDrivingRobotID(),
+            "waitingPoint": dep.getWaitingPoint(),
+        }
+        for dep in coordinator.getCurrentDependencies().values()
+        if dep.getDrivingRobotID() != 0  # 0 = stopping-point-only dependency
+    ]
 
     sections = []
     for cs in css:
@@ -189,6 +225,7 @@ def build_state_message(
         "kind": "state",
         "robots": robots,
         "criticalSections": sections,
+        "dependencies": dependencies,
         "counts": {
             "driving": len(driving),
             "parked": len(trackers) - len(driving),
@@ -230,7 +267,7 @@ class WebViewer:
 
         self._seq = 0
         self._clients: set[WebSocket] = set()
-        self._known_envelopes: dict[int, int] = {}
+        self._known_static_key: object = None
         self._poll_task: asyncio.Task[None] | None = None
         self._uvicorn_server: uvicorn.Server | None = None
 
@@ -303,9 +340,9 @@ class WebViewer:
             await asyncio.sleep(period)
             if not self._clients:
                 continue
-            envelopes = driving_envelope_ids(self.coordinator)
-            if envelopes != self._known_envelopes:
-                self._known_envelopes = envelopes
+            key = static_content_key(self.coordinator)
+            if key != self._known_static_key:
+                self._known_static_key = key
                 await self._broadcast(self._static_message())
             await self._broadcast(self._stamp(build_state_message(self.coordinator)))
 

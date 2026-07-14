@@ -63,6 +63,9 @@ async def test_message_composition(
         assert all(len(pt) == 2 for pt in entry["path"])
         assert len(entry["envelope"]) >= 1
         assert all(len(ring) >= 3 for ring in entry["envelope"])
+    outlines = {f["id"]: f["ring"] for f in static["footprints"]}
+    assert set(outlines) == {1, 2}
+    assert all(len(ring) >= 3 for ring in outlines.values())
 
     state = build_state_message(coordinator)
     assert state["kind"] == "state"
@@ -70,8 +73,13 @@ async def test_message_composition(
     assert set(robots) == {1, 2}
     for entry in robots.values():
         assert entry["driving"] is True
-        assert len(entry["footprint"]) >= 3
+        assert len(entry["pose"]) == 3
         assert entry["pathLength"] >= 2
+    # one CS between two robots → exactly one yielder → leader dependency
+    deps = state["dependencies"]
+    assert len(deps) == 1
+    assert {deps[0]["waiting"], deps[0]["driving"]} == {1, 2}
+    assert deps[0]["waitingPoint"] >= 0
     # the crossing paths must have produced the one critical section
     assert state["counts"]["criticalSections"] == 1
     [cs] = state["criticalSections"]

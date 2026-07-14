@@ -98,7 +98,10 @@ async def test_priority_winner_actually_goes_first(
                 observed_hold = True
             if not coordinator.isDrivingRobot(1) and not coordinator.isDrivingRobot(2):
                 break
-        await wait_until_idle(coordinator, timeout=5.0)
+        # generous: the observation loop above can consume most of the
+        # mission, leaving only the tail for this wait — 5s flaked under
+        # full-suite load
+        await wait_until_idle(coordinator, timeout=15.0)
         assert observed_hold, "loser was never observed holding short of the CS"
     finally:
         stop.set()
