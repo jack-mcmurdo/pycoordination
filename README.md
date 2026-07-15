@@ -68,7 +68,7 @@ with `npm --prefix frontend install && npm --prefix frontend run build`.
 | `examples/three_robots.py`        | Three RK4 robots through one intersection, deadlock-free.          |
 | `examples/three_robots_oldpath.py`| The original Java repo's `debug1/2/3.path` recorded paths.         |
 | `examples/convoy.py`              | Convoy following: a yielder trails the leader inside a shared corridor. |
-| `examples/dynamic_missions.py`    | Robots get new missions after finishing their first ones.          |
+| `examples/dynamic_missions.py`    | Hybrid A*-planned missions on the demo map. With `--web-viewer` it is interactive: click a robot, then press-drag-release to post a goal pose (as in the gif above). |
 | `examples/five_robots_sine.py`    | Five robots on interleaved sine/cosine waves whose crossings form a lattice of critical sections. |
 
 ## Run the tests
