@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "coordination-oru"
-version = "0.5.0"
+version = "0.6.0"
 description = "Python port of coordination_oru: a multi-robot trajectory-envelope coordinator."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -17,6 +17,8 @@ dependencies = [
     "numpy>=1.26",
     "structlog>=24.0",
     "attrs>=23.0",
+    "pyyaml>=6.0",
+    "scipy>=1.12",
 ]
 
 [project.optional-dependencies]
@@ -43,7 +45,7 @@ dev = [
 include = ["coordination_oru*"]
 
 [tool.setuptools.package-data]
-"coordination_oru.data" = ["*.path"]
+"coordination_oru.data" = ["*.path", "maps/*"]
 # web viewer frontend build (gitignored; built by npm before packaging)
 "coordination_oru.viz" = ["static/**"]
 
