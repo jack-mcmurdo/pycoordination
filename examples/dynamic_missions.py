@@ -50,6 +50,7 @@ def setup_robots(tec: TrajectoryEnvelopeCoordinatorSimulation) -> None:
         planner.setFootprint(*FOOTPRINT)
         planners[robotID] = planner
         tec.setMotionPlanner(robotID, planner)
+        tec.setRobotMaxVelocity(robotID, 0.5)
         tec.placeRobot(robotID, start)
 
 
