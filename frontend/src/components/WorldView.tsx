@@ -147,9 +147,24 @@ export function WorldView() {
     return byRobot;
   }, [staticData]);
 
+  // Server thetas are wrapped to (-pi, pi]; unwrap them into a continuous
+  // angle per robot, otherwise the CSS rotate transition spins the long way
+  // around (a full 360) whenever a robot crosses the +/-pi seam.
+  const unwrappedThetas = useRef(new Map<number, number>());
   const poses = useMemo(() => {
     const byRobot = new Map<number, [number, number, number]>();
-    for (const robot of state?.robots ?? []) byRobot.set(robot.id, robot.pose);
+    for (const robot of state?.robots ?? []) {
+      const [x, y, theta] = robot.pose;
+      const prev = unwrappedThetas.current.get(robot.id);
+      let continuous = theta;
+      if (prev !== undefined) {
+        let delta = theta - prev;
+        delta -= Math.round(delta / (2 * Math.PI)) * 2 * Math.PI;
+        continuous = prev + delta;
+      }
+      unwrappedThetas.current.set(robot.id, continuous);
+      byRobot.set(robot.id, [x, y, continuous]);
+    }
     return byRobot;
   }, [state]);
 
@@ -364,7 +379,7 @@ export function WorldView() {
         {state?.robots.map((robot) => {
           const outline = outlines.get(robot.id);
           if (!outline) return null;
-          const [x, y, theta] = robot.pose;
+          const [x, y, theta] = poses.get(robot.id) ?? robot.pose;
           const selected = interactive && selectedRobot === robot.id;
           const circumradius = circumradii.get(robot.id) ?? 0;
           return (
