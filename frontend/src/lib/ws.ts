@@ -1,9 +1,18 @@
 import { useEffect } from "react";
-import type { ServerMessage } from "@/lib/protocol";
+import type { PostGoalMessage, ServerMessage } from "@/lib/protocol";
 import { useVizStore } from "@/store";
 
 const MAX_BACKOFF_MS = 10_000;
 const INITIAL_BACKOFF_MS = 250;
+
+let activeSocket: WebSocket | null = null;
+
+/** Send a goal pose to the server; a no-op while disconnected. */
+export function sendPostGoal(msg: PostGoalMessage): void {
+  if (activeSocket?.readyState === WebSocket.OPEN) {
+    activeSocket.send(JSON.stringify(msg));
+  }
+}
 
 function wsUrl(): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -27,6 +36,7 @@ export function useLiveConnection(): void {
       if (stopped) return;
       setConnectionStatus("connecting");
       socket = new WebSocket(wsUrl());
+      activeSocket = socket;
 
       socket.onopen = () => {
         backoff = INITIAL_BACKOFF_MS;
@@ -39,6 +49,7 @@ export function useLiveConnection(): void {
       };
 
       socket.onclose = () => {
+        if (activeSocket === socket) activeSocket = null;
         setConnectionStatus("closed");
         if (stopped) return;
         retryTimer = setTimeout(connect, backoff);

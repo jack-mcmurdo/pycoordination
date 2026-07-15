@@ -20,17 +20,21 @@ import argparse
 import asyncio
 import threading
 import webbrowser
-from typing import Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from coordination_oru.simulation2D.trajectory_envelope_coordinator_simulation import (
     TrajectoryEnvelopeCoordinatorSimulation,
 )
+
+if TYPE_CHECKING:
+    from coordination_oru.motionplanning.occupancy_map import OccupancyMap
 from coordination_oru.trajectory_envelope_tracker_dummy import (
     TrajectoryEnvelopeTrackerDummy,
 )
 from coordination_oru.util.logging import configure_logging
 
 Scenario = Callable[[TrajectoryEnvelopeCoordinatorSimulation], Awaitable[None]]
+OnGoal = Callable[[int, float, float, float], Awaitable[None]]
 
 IDLE_TIMEOUT = 120.0
 
@@ -96,6 +100,9 @@ def run(
     title: str = "coordination_oru",
     width: int = 800,
     height: int = 800,
+    occupancy_map: "OccupancyMap | None" = None,
+    on_goal: OnGoal | None = None,
+    interactive: bool = False,
 ) -> None:
     """Run a scenario with the viewer selected on the command line."""
     configure_logging()
@@ -115,6 +122,9 @@ def run(
             )
             viewer = "headless"
 
+    if viewer != "web" and interactive:
+        print(f"[{title}] interactive goal posting needs --web-viewer; running the scripted scenario")
+
     if viewer == "headless":
         asyncio.run(_run_headless(tec, scenario, title=title))
     elif viewer == "web":
@@ -126,6 +136,9 @@ def run(
             title=title,
             port=args.port,
             open_browser=not args.no_browser,
+            occupancy_map=occupancy_map,
+            on_goal=on_goal,
+            interactive=interactive,
         )
     else:
         _run_viz(
@@ -232,6 +245,9 @@ def _run_web(
     title: str,
     port: int,
     open_browser: bool,
+    occupancy_map: "OccupancyMap | None" = None,
+    on_goal: OnGoal | None = None,
+    interactive: bool = False,
 ) -> None:
     """Sim and websocket server share one asyncio loop — no threads."""
     from coordination_oru.viz.web_viewer import WebViewer
@@ -243,6 +259,8 @@ def _run_web(
             world_size=world_size,
             world_center=world_center,
             title=title,
+            map=occupancy_map,
+            on_goal=on_goal,
         )
         server_task = asyncio.create_task(viewer.serve())
         # fail fast on a missing frontend build or an occupied port
@@ -256,6 +274,10 @@ def _run_web(
         await tec.startInference()
         try:
             await scenario(tec)
+            if interactive:
+                print("select a robot, then press-drag-release to post a goal pose (Ctrl+C to exit)")
+                await server_task  # inference keeps running for posted goals
+                return
             await wait_until_idle(tec, IDLE_TIMEOUT)
         finally:
             await tec.stopInference()

@@ -12,12 +12,16 @@ ms):
 
 - ``{"kind": "static", "title", "world": {"size", "center"}, "robots":
   [{"id", "envelopeID", "path": [[x, y], ...], "envelope": [ring, ...]}],
-  "footprints": [{"id", "ring"}]}`` — per-robot path polyline and
-  swept-envelope polygon rings for every *driving* robot, plus each known
-  robot's footprint outline centered at the origin. Sent on client connect
-  and whenever the set of robots or driving envelopes changes (missions
-  start/finish). Paths are the heavy payload, so they are only re-sent on
-  change.
+  "footprints": [{"id", "ring"}], "interactive": bool}`` — per-robot path
+  polyline and swept-envelope polygon rings for every *driving* robot, plus
+  each known robot's footprint outline centered at the origin. Sent on
+  client connect and whenever the set of robots or driving envelopes
+  changes (missions start/finish). Paths are the heavy payload, so they
+  are only re-sent on change. When the viewer has an occupancy map, the
+  message also carries ``"map": {"dataUri", "resolution", "origin":
+  [x, y], "width", "height"}`` (a base64 PNG data URI plus the world-frame
+  placement); ``interactive`` tells the frontend to enable the
+  goal-posting UX.
 - ``{"kind": "state", "robots": [{"id", "driving", "pose": [x, y, theta],
   "pathIndex", "pathLength", "velocity", "criticalPoint"}],
   "criticalSections": [{"robot1", "start1", "end1", "robot2", "start2",
@@ -29,6 +33,11 @@ ms):
   frontend slices the highlight segments from those; ``dependencies`` are
   the current yielder → leader precedence orders.
 
+Inbound messages: ``{"kind": "postGoal", "robot": int, "goal": [x, y,
+theta]}`` — a goal pose for a robot, dispatched to the ``on_goal``
+callback when one is configured. Malformed or unknown inbound messages
+are silently ignored.
+
 The server runs *inside* the simulation's asyncio event loop (the
 coordinator is asyncio-native, so no thread bridge is needed): create the
 viewer, then ``await viewer.serve()`` alongside the sim driver.
@@ -37,11 +46,13 @@ viewer, then ``await viewer.serve()`` alongside the sim driver.
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib.resources
+import json
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable
 
 import uvicorn
 from starlette.applications import Starlette
@@ -59,6 +70,7 @@ if TYPE_CHECKING:
     from coordination_oru.abstract_trajectory_envelope_coordinator import (
         AbstractTrajectoryEnvelopeCoordinator,
     )
+    from coordination_oru.motionplanning.occupancy_map import OccupancyMap
 
 __all__ = ["WebViewer", "build_static_message", "build_state_message"]
 
@@ -126,6 +138,9 @@ def build_static_message(
     title: str = "coordination_oru",
     world_size: float = 20.0,
     world_center: tuple[float, float] = (0.0, 0.0),
+    occupancy_map: "OccupancyMap | None" = None,
+    map_data_uri: str | None = None,
+    interactive: bool = False,
 ) -> dict[str, Any]:
     """The per-mission payload: paths and swept envelopes of driving robots."""
     robots = []
@@ -156,13 +171,23 @@ def build_static_message(
                 ],
             }
         )
-    return {
+    message: dict[str, Any] = {
         "kind": "static",
         "title": title,
         "world": {"size": world_size, "center": list(world_center)},
         "robots": robots,
         "footprints": footprints,
+        "interactive": interactive,
     }
+    if occupancy_map is not None and map_data_uri is not None:
+        message["map"] = {
+            "dataUri": map_data_uri,
+            "resolution": occupancy_map.resolution,
+            "origin": [occupancy_map.origin[0], occupancy_map.origin[1]],
+            "width": occupancy_map.width,
+            "height": occupancy_map.height,
+        }
+    return message
 
 
 def build_state_message(
@@ -256,6 +281,8 @@ class WebViewer:
         world_size: float = 20.0,
         world_center: tuple[float, float] = (0.0, 0.0),
         title: str = "coordination_oru",
+        map: "OccupancyMap | None" = None,
+        on_goal: "Callable[[int, float, float, float], Awaitable[None]] | None" = None,
     ) -> None:
         self.coordinator = coordinator
         self.host = host
@@ -264,6 +291,13 @@ class WebViewer:
         self.world_size = world_size
         self.world_center = world_center
         self.title = title
+        self.map = map
+        self.on_goal = on_goal
+        self._map_data_uri: str | None = None
+        if map is not None:
+            self._map_data_uri = "data:image/png;base64," + base64.b64encode(
+                map.to_png_bytes()
+            ).decode("ascii")
 
         self._seq = 0
         self._clients: set[WebSocket] = set()
@@ -309,6 +343,9 @@ class WebViewer:
                 title=self.title,
                 world_size=self.world_size,
                 world_center=self.world_center,
+                occupancy_map=self.map,
+                map_data_uri=self._map_data_uri,
+                interactive=self.on_goal is not None,
             )
         )
 
@@ -321,7 +358,23 @@ class WebViewer:
             await websocket.send_json(self._static_message())
             await websocket.send_json(self._stamp(build_state_message(self.coordinator)))
             while True:
-                await websocket.receive_text()  # inbound is reserved, unimplemented
+                raw = await websocket.receive_text()
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                goal = msg.get("goal")
+                if (
+                    msg.get("kind") == "postGoal"
+                    and self.on_goal is not None
+                    and isinstance(msg.get("robot"), int)
+                    and isinstance(goal, list)
+                    and len(goal) == 3
+                    and all(isinstance(v, (int, float)) for v in goal)
+                ):
+                    await self.on_goal(msg["robot"], float(goal[0]), float(goal[1]), float(goal[2]))
         except WebSocketDisconnect:
             pass
         finally:

@@ -88,6 +88,67 @@ async def test_message_composition(
     assert 0 <= cs["start2"] <= cs["end2"]
 
 
+def test_static_message_map_and_interactive(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    import numpy as np
+
+    from coordination_oru.motionplanning import OccupancyMap
+
+    tec = TrajectoryEnvelopeCoordinatorSimulation(CONTROL_PERIOD=10, TEMPORAL_RESOLUTION=1000.0)
+    tec.setupSolver()
+    image = np.full((4, 6), 254, dtype=np.uint8)
+    omap = OccupancyMap(image, 0.5, (1.0, 2.0), image < 100)
+
+    plain = build_static_message(tec)
+    assert "map" not in plain
+    assert plain["interactive"] is False
+
+    static = build_static_message(
+        tec,
+        occupancy_map=omap,
+        map_data_uri="data:image/png;base64,AAA=",
+        interactive=True,
+    )
+    assert static["interactive"] is True
+    assert static["map"] == {
+        "dataUri": "data:image/png;base64,AAA=",
+        "resolution": 0.5,
+        "origin": [1.0, 2.0],
+        "width": 6,
+        "height": 4,
+    }
+
+    async def on_goal(robotID: int, x: float, y: float, theta: float) -> None:
+        pass
+
+    viewer = WebViewer(tec, map=omap, on_goal=on_goal)
+    message = viewer._static_message()
+    assert message["interactive"] is True
+    assert message["map"]["dataUri"].startswith("data:image/png;base64,")
+
+
+def test_websocket_post_goal_dispatch() -> None:
+    tec = TrajectoryEnvelopeCoordinatorSimulation(CONTROL_PERIOD=10, TEMPORAL_RESOLUTION=1000.0)
+    tec.setupSolver()
+    received: list[tuple[int, float, float, float]] = []
+
+    async def on_goal(robotID: int, x: float, y: float, theta: float) -> None:
+        received.append((robotID, x, y, theta))
+
+    viewer = WebViewer(tec, title="goal-test", on_goal=on_goal)
+    with TestClient(viewer.app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_json()  # static
+            ws.receive_json()  # state
+            # garbage is silently ignored
+            ws.send_text("not json")
+            ws.send_json({"kind": "postGoal", "robot": "x", "goal": [1.0, 2.0, 3.0]})
+            ws.send_json({"kind": "postGoal", "robot": 1, "goal": [1.0, 2.0]})
+            ws.send_json({"kind": "postGoal", "robot": 1, "goal": [2.5, -3.0, 1.57]})
+            # the broadcast keeps flowing, proving no handler crash
+            assert ws.receive_json()["kind"] in ("static", "state")
+    assert received == [(1, 2.5, -3.0, 1.57)]
+
+
 def test_websocket_sends_static_then_state() -> None:
     tec = TrajectoryEnvelopeCoordinatorSimulation(CONTROL_PERIOD=10, TEMPORAL_RESOLUTION=1000.0)
     tec.setupSolver()

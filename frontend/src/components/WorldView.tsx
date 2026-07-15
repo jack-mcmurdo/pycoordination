@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Maximize } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { robotColor } from "@/lib/robot-colors";
+import { sendPostGoal } from "@/lib/ws";
 import type { CriticalSectionState, Point, StaticMessage } from "@/lib/protocol";
 import { useVizStore } from "@/store";
 
@@ -16,6 +17,10 @@ function toPoints(points: Point[]): string {
 }
 
 const RAD_TO_DEG = 180 / Math.PI;
+
+function r3(v: number): number {
+  return Math.round(v * 1000) / 1000;
+}
 
 interface ViewBox {
   x: number;
@@ -105,6 +110,8 @@ const CriticalSectionLayer = memo(
 export function WorldView() {
   const staticData = useVizStore((s) => s.staticData);
   const state = useVizStore((s) => s.state);
+  const selectedRobot = useVizStore((s) => s.selectedRobot);
+  const setSelectedRobot = useVizStore((s) => s.setSelectedRobot);
 
   const worldViewBox = useMemo<ViewBox>(() => {
     if (!staticData) return { x: -10, y: -10, w: 20, h: 20 };
@@ -133,14 +140,51 @@ export function WorldView() {
     return byRobot;
   }, [staticData]);
 
+  const circumradii = useMemo(() => {
+    const byRobot = new Map<number, number>();
+    for (const fp of staticData?.footprints ?? [])
+      byRobot.set(fp.id, Math.max(...fp.ring.map(([x, y]) => Math.hypot(x, y))));
+    return byRobot;
+  }, [staticData]);
+
   const poses = useMemo(() => {
     const byRobot = new Map<number, [number, number, number]>();
     for (const robot of state?.robots ?? []) byRobot.set(robot.id, robot.pose);
     return byRobot;
   }, [state]);
 
+  const interactive = staticData?.interactive === true;
+
   const drag = useRef<{ x: number; y: number; captured: boolean } | null>(null);
   const DRAG_THRESHOLD_PX = 4;
+  // goal-posting drag (interactive mode, robot selected): anchor = world
+  // point of pointer-down, startClient = screen point for the 8 px test
+  const goalDrag = useRef<{
+    anchor: { x: number; y: number };
+    startClient: { x: number; y: number };
+  } | null>(null);
+  const [goalPreview, setGoalPreview] = useState<{ x: number; y: number } | null>(null);
+
+  // Undo the y-negation; exact under preserveAspectRatio letterboxing.
+  function clientToWorld(e: React.PointerEvent<SVGSVGElement>): { x: number; y: number } {
+    const pt = new DOMPoint(e.clientX, e.clientY).matrixTransform(
+      e.currentTarget.getScreenCTM()!.inverse(),
+    );
+    return { x: pt.x, y: -pt.y };
+  }
+
+  useEffect(() => {
+    if (!interactive) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        goalDrag.current = null;
+        setGoalPreview(null);
+        setSelectedRobot(null);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [interactive, setSelectedRobot]);
 
   function onWheel(e: React.WheelEvent<SVGSVGElement>) {
     e.preventDefault();
@@ -158,10 +202,21 @@ export function WorldView() {
   }
 
   function onPointerDown(e: React.PointerEvent<SVGSVGElement>) {
+    if (interactive && selectedRobot !== null) {
+      const anchor = clientToWorld(e);
+      goalDrag.current = { anchor, startClient: { x: e.clientX, y: e.clientY } };
+      setGoalPreview(anchor);
+      e.currentTarget.setPointerCapture(e.pointerId);
+      return;
+    }
     drag.current = { x: e.clientX, y: e.clientY, captured: false };
   }
 
   function onPointerMove(e: React.PointerEvent<SVGSVGElement>) {
+    if (goalDrag.current) {
+      setGoalPreview(clientToWorld(e));
+      return;
+    }
     if (!drag.current) return;
     const dxPx = e.clientX - drag.current.x;
     const dyPx = e.clientY - drag.current.y;
@@ -182,6 +237,27 @@ export function WorldView() {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
+    const goal = goalDrag.current;
+    if (goal && selectedRobot !== null) {
+      const cur = clientToWorld(e);
+      const { anchor, startClient } = goal;
+      const movedPx = Math.hypot(e.clientX - startClient.x, e.clientY - startClient.y);
+      let theta: number;
+      if (movedPx >= 8) {
+        theta = Math.atan2(cur.y - anchor.y, cur.x - anchor.x);
+      } else {
+        // plain click: aim the goal heading from the robot toward the click
+        const pose = poses.get(selectedRobot);
+        theta = pose ? Math.atan2(anchor.y - pose[1], anchor.x - pose[0]) : 0;
+      }
+      sendPostGoal({
+        kind: "postGoal",
+        robot: selectedRobot,
+        goal: [r3(anchor.x), r3(anchor.y), r3(theta)],
+      });
+    }
+    goalDrag.current = null;
+    setGoalPreview(null);
     drag.current = null;
   }
 
@@ -195,6 +271,8 @@ export function WorldView() {
 
   const stroke = viewBox.w / 500;
   const labelSize = viewBox.w / 45;
+  const map = staticData.map;
+  const goalAnchor = goalDrag.current?.anchor ?? null;
 
   return (
     <div className="relative h-full w-full">
@@ -208,7 +286,11 @@ export function WorldView() {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        className="cursor-grab touch-none active:cursor-grabbing"
+        className={
+          interactive && selectedRobot !== null
+            ? "cursor-crosshair touch-none"
+            : "cursor-grab touch-none active:cursor-grabbing"
+        }
       >
         <defs>
           <marker
@@ -222,7 +304,32 @@ export function WorldView() {
           >
             <path d="M 0 0 L 10 5 L 0 10 z" fill={ARROW_COLOR} />
           </marker>
+          {/* same arrow, tinted by the line it terminates */}
+          <marker
+            id="goal-arrow"
+            viewBox="0 0 10 10"
+            refX="9"
+            refY="5"
+            markerWidth="7"
+            markerHeight="7"
+            orient="auto-start-reverse"
+          >
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke" />
+          </marker>
         </defs>
+
+        {map && (
+          <image
+            href={map.dataUri}
+            x={map.origin[0]}
+            y={-(map.origin[1] + map.height * map.resolution)}
+            width={map.width * map.resolution}
+            height={map.height * map.resolution}
+            preserveAspectRatio="none"
+            opacity={0.85}
+            style={{ imageRendering: "pixelated" }}
+          />
+        )}
 
         <StaticLayers staticData={staticData} stroke={stroke} />
         <CriticalSectionLayer
@@ -258,9 +365,21 @@ export function WorldView() {
           const outline = outlines.get(robot.id);
           if (!outline) return null;
           const [x, y, theta] = robot.pose;
+          const selected = interactive && selectedRobot === robot.id;
+          const circumradius = circumradii.get(robot.id) ?? 0;
           return (
             <g
               key={`robot-${robot.id}`}
+              className={interactive ? "cursor-pointer" : undefined}
+              onPointerDown={interactive ? (e) => e.stopPropagation() : undefined}
+              onClick={
+                interactive
+                  ? (e) => {
+                      e.stopPropagation();
+                      setSelectedRobot(robot.id);
+                    }
+                  : undefined
+              }
               style={{
                 transform: `translate(${x}px, ${-y}px) rotate(${-theta * RAD_TO_DEG}deg)`,
                 transition: POSE_TRANSITION,
@@ -273,6 +392,15 @@ export function WorldView() {
                 stroke={robotColor(robot.id)}
                 strokeWidth={stroke / 2}
               />
+              {selected && (
+                <circle
+                  r={circumradius * 1.4}
+                  fill="none"
+                  stroke={robotColor(robot.id)}
+                  strokeDasharray={stroke * 4}
+                  strokeWidth={stroke}
+                />
+              )}
             </g>
           );
         })}
@@ -294,6 +422,30 @@ export function WorldView() {
             R{robot.id}
           </text>
         ))}
+
+        {/* live preview of the goal pose being dragged out */}
+        {goalAnchor && goalPreview && selectedRobot !== null && (
+          <g className="pointer-events-none">
+            <circle
+              cx={goalAnchor.x}
+              cy={-goalAnchor.y}
+              r={stroke * 3}
+              fill={robotColor(selectedRobot)}
+            />
+            {(goalPreview.x !== goalAnchor.x || goalPreview.y !== goalAnchor.y) && (
+              <line
+                x1={goalAnchor.x}
+                y1={-goalAnchor.y}
+                x2={goalPreview.x}
+                y2={-goalPreview.y}
+                stroke={robotColor(selectedRobot)}
+                strokeWidth={stroke * 1.5}
+                strokeDasharray={`${stroke * 6} ${stroke * 3}`}
+                markerEnd="url(#goal-arrow)"
+              />
+            )}
+          </g>
+        )}
       </svg>
       <Button
         size="icon"
@@ -304,6 +456,11 @@ export function WorldView() {
       >
         <Maximize className="size-4" />
       </Button>
+      {interactive && selectedRobot !== null && (
+        <div className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded bg-background/80 px-3 py-1 text-sm text-muted-foreground">
+          Robot {selectedRobot} — press-drag-release to send a goal pose · Esc to cancel
+        </div>
+      )}
     </div>
   );
 }
