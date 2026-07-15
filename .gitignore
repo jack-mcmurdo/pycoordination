@@ -45,3 +45,6 @@ Thumbs.db
 coordination_oru/viz/static/
 frontend/node_modules/
 dist/
+
+# MkDocs build output
+site/

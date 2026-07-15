@@ -32,6 +32,10 @@ viz = [
     "starlette>=0.37",
     "uvicorn>=0.29",
 ]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.24",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

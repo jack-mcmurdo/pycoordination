@@ -1,0 +1,84 @@
+site_name: coordination_oru (Python)
+site_description: >-
+  Python port of coordination_oru — a loosely-coupled multi-robot
+  coordination framework based on trajectory envelopes (Pecora et al.,
+  ICAPS 2018).
+site_url: https://pycoordination.pages.dev/
+repo_url: https://github.com/jack-mcmurdo/pycoordination
+repo_name: jack-mcmurdo/pycoordination
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - toc.follow
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Theory → implementation:
+      - Envelopes & critical sections: theory/envelopes.md
+      - The coordination loop: theory/coordination.md
+      - Ordering, forward models & deadlocks: theory/ordering-and-deadlocks.md
+  - Guides:
+      - Motion planning: guides/motion-planning.md
+      - Simulation: guides/simulation.md
+      - Visualization: guides/visualization.md
+  - API reference:
+      - Coordinator: reference/coordinator.md
+      - Trackers: reference/trackers.md
+      - metacsp: reference/metacsp.md
+      - Motion planning: reference/motionplanning.md
+      - Simulation: reference/simulation2D.md
+      - Visualization: reference/viz.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.details
+
+extra_javascript:
+  - javascripts/katex.js
+  - https://unpkg.com/katex@0.16/dist/katex.min.js
+  - https://unpkg.com/katex@0.16/dist/contrib/auto-render.min.js
+
+extra_css:
+  - https://unpkg.com/katex@0.16/dist/katex.min.css
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            members: true
+            show_source: false
+            show_if_no_docstring: true
+            show_root_heading: true
+            members_order: source
+            filters: ["!^_"]
+            docstring_section_style: list

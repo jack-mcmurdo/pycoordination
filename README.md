@@ -5,9 +5,15 @@ the trajectory-envelope multi-robot coordinator from
 *Pecora et al., A loosely-coupled approach for multi-robot coordination, motion
 planning and control, ICAPS 2018*.
 
-This port targets production use. The ROS layer, OMPL motion planner, and
-visualization are explicitly out of scope — the framework is loosely coupled,
-so paths are supplied externally.
+![Dynamic missions demo — three robots coordinated on an occupancy-grid map](docs/assets/CoordinatorPy.gif)
+
+**Documentation:** <https://pycoordination.pages.dev/> — getting started, a
+theory→implementation walkthrough of the paper, guides, and API reference.
+
+This port targets production use. The framework is loosely coupled: paths may
+be supplied externally by any planner, though a built-in Hybrid A* planner
+(Reeds-Shepp paths over ROS-style occupancy maps) and two viewers (browser,
+pyglet) are included. The ROS layer of the original is out of scope.
 
 ## Why Python?
 
@@ -81,12 +87,16 @@ licence.
 
 ```
 coordination_oru/
+├── *.py               # Coordinator, trackers, critical sections, dependencies,
+│                      #   forward models, missions (Java-mirroring module names)
 ├── metacsp/
-│   ├── temporal/  # Bounds, Allen relations, STP (Floyd-Warshall)
-│   └── spatial/   # Pose, TrajectoryEnvelope, TrajectoryEnvelopeSolver
-├── coordinator/   # Critical-section detection, ordering, deadlock check
-├── simulation/    # In-process simulator with hardcoded paths
-├── data/          # Bundled demo .path files (ship with the wheel)
-└── util/          # Footprint helpers, path loaders/generators, structlog setup
-examples/          # Standalone runnable demos (python examples/<name>.py)
+│   ├── temporal/      # Bounds, Allen relations, STP (Floyd-Warshall)
+│   └── spatial/       # Pose, TrajectoryEnvelope, TrajectoryEnvelopeSolver
+├── motionplanning/    # Hybrid A* + Reeds-Shepp, ROS-style occupancy maps
+├── simulation2D/      # RK4-tracked simulated robots, simulation coordinator
+├── viz/               # Web viewer (starlette + React) and pyglet viewer
+├── data/              # Bundled demo .path files and maps (ship with the wheel)
+└── util/              # Footprint helpers, path loaders, structlog setup
+examples/              # Standalone runnable demos (python examples/<name>.py)
+docs/                  # MkDocs documentation (https://pycoordination.pages.dev/)
 ```
