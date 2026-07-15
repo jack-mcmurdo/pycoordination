@@ -11,6 +11,8 @@ Covers, per the port plan:
   (f) re-tasking a robot leaves no ghost envelope/CS/dependency behind
   (g) ConstantAccelerationForwardModel.getEarliestStoppingPathIndex is a
       sane numeric stopping-distance estimate
+  (h) spawnReplanning defers rePlanPath to a task instead of recursing
+      through replacePath -> updateDependencies
 """
 
 from __future__ import annotations
@@ -294,6 +296,39 @@ def test_earliest_stopping_path_index_matches_kinematics() -> None:
 
     assert 0 <= idx <= len(path) - 1
     assert abs(idx - expected_index) <= 2, f"expected stopping index near {expected_index}, got {idx}"
+
+
+# --------------------------------------------------------------------- (h)
+
+
+@pytest.mark.asyncio
+async def test_spawn_replanning_defers_replan_to_a_task(
+    coordinator: TrajectoryEnvelopeCoordinatorSimulation, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """spawnReplanning must schedule rePlanPath instead of calling it inline
+    (Java runs it on a separate thread): rePlanPath ends in replacePath ->
+    updateDependencies, which can re-detect the same nonlive cycle and spawn
+    again — run inline that is unbounded recursion (RecursionError) whenever
+    a deadlock survives its replan, e.g. a goal inside the critical section."""
+    from coordination_oru.motionplanning.abstract_motion_planner import AbstractMotionPlanner
+
+    class _NeverCalledPlanner(AbstractMotionPlanner):
+        def doPlanning(self) -> bool:
+            raise AssertionError("not reached: rePlanPath is stubbed out")
+
+    coordinator.setMotionPlanner(1, _NeverCalledPlanner())
+    calls: list[tuple[set[int], set[int]]] = []
+    monkeypatch.setattr(
+        coordinator, "rePlanPath", lambda robots, obstacles: calls.append((robots, obstacles))
+    )
+
+    assert coordinator.spawnReplanning({1}, {1, 2}) is True
+    assert calls == [], "rePlanPath ran synchronously inside spawnReplanning"
+
+    tasks = list(coordinator._replanTasks)
+    assert len(tasks) == 1
+    await asyncio.gather(*tasks)
+    assert calls == [({1}, {1, 2})]
 
 
 # ---------------------------------------------------------- global avoidance

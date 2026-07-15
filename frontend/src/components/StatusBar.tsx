@@ -18,6 +18,11 @@ export function StatusBar() {
           CSes {counts.criticalSections}
         </Badge>
         <Badge variant="secondary">orders {counts.orders}</Badge>
+        {state.deadlocked && (
+          <Badge variant="destructive" className="animate-pulse">
+            Deadlocked!
+          </Badge>
+        )}
         {finished && <Badge>all parked</Badge>}
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-muted-foreground">

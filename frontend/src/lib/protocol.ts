@@ -81,6 +81,8 @@ export interface StateMessage {
     criticalSections: number;
     orders: number;
   };
+  /** True while a nonlive cycle exists and all its robots are stopped. */
+  deadlocked?: boolean;
 }
 
 export type ServerMessage = StaticMessage | StateMessage;

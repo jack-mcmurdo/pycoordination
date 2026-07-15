@@ -86,6 +86,8 @@ async def test_message_composition(
     assert {cs["robot1"], cs["robot2"]} == {1, 2}
     assert 0 <= cs["start1"] <= cs["end1"]
     assert 0 <= cs["start2"] <= cs["end2"]
+    # a plain crossing is live, not deadlocked
+    assert state["deadlocked"] is False
 
 
 def test_static_message_map_and_interactive(tmp_path) -> None:  # type: ignore[no-untyped-def]

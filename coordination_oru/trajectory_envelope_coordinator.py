@@ -19,6 +19,7 @@ Java when no planner is configured for a robot.
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 from typing import TYPE_CHECKING, Callable
 
@@ -57,6 +58,7 @@ class TrajectoryEnvelopeCoordinator(AbstractTrajectoryEnvelopeCoordinator):
         self.currentCyclesList: dict[tuple[int, int], set[tuple[int, ...]]] = {}
 
         self.replanningStoppingPoints: dict[int, Dependency] = {}
+        self._replanTasks: set[asyncio.Task[None]] = set()
 
         self.breakDeadlocksByReordering = True
         self.breakDeadlocksByReplanning = True
@@ -163,7 +165,9 @@ class TrajectoryEnvelopeCoordinator(AbstractTrajectoryEnvelopeCoordinator):
             closestDeps[depToSend.getWaitingRobotID()] = depToSend
         return closestDeps
 
-    def isDeadlocked(self) -> bool:
+    def computeIsDeadlocked(self) -> bool:
+        """Recompute :attr:`isDeadlockedFlag` without firing the
+        deadlocked callback — safe for observers (e.g. viewers) to poll."""
         g = self.depsToGraph(self.currentDependencies)
         nonlive_cycles = self.findSimpleNonliveCycles(g)
         self.isDeadlockedFlag = False
@@ -182,6 +186,10 @@ class TrajectoryEnvelopeCoordinator(AbstractTrajectoryEnvelopeCoordinator):
                     break
             if self.isDeadlockedFlag:
                 break
+        return self.isDeadlockedFlag
+
+    def isDeadlocked(self) -> bool:
+        self.computeIsDeadlocked()
         if self.deadlockedCallback is not None and self.isDeadlockedFlag:
             self.deadlockedCallback()
         return self.isDeadlockedFlag
@@ -371,9 +379,32 @@ class TrajectoryEnvelopeCoordinator(AbstractTrajectoryEnvelopeCoordinator):
             return False
         if self.setMaxCPDependencies(robotsToReplan):
             log.info("spawning_replan", robots=sorted(robotsToReplan), connected=sorted(allConnectedRobots))
-            self.rePlanPath(robotsToReplan, allConnectedRobots)
+            # Deferred like Java's replanning thread: rePlanPath ends in
+            # replacePath -> updateDependencies, which can re-detect the same
+            # nonlive cycle and spawn again — run inline that is unbounded
+            # recursion. The robots stay locked via replanningStoppingPoints
+            # until the task runs, so no duplicate spawn can sneak in between.
+            task = asyncio.get_running_loop().create_task(
+                self._rePlanPathTask(robotsToReplan, allConnectedRobots),
+                name=f"replan-{'-'.join(str(r) for r in sorted(robotsToReplan))}",
+            )
+            self._replanTasks.add(task)
+            task.add_done_callback(self._replanTasks.discard)
             return True
         return False
+
+    async def _rePlanPathTask(self, robotsToReplan: set[int], allConnectedRobots: set[int]) -> None:
+        async with self._lock:
+            self.rePlanPath(robotsToReplan, allConnectedRobots)
+
+    async def stopInference(self) -> None:
+        await super().stopInference()
+        for task in list(self._replanTasks):
+            task.cancel()
+        if self._replanTasks:
+            await asyncio.gather(*self._replanTasks, return_exceptions=True)
+        # a cancelled replan task never reached its unlock in rePlanPath
+        self.replanningStoppingPoints.clear()
 
     def setMaxCPDependencies(self, robotIDs: set[int]) -> bool:
         for robotID in robotIDs:

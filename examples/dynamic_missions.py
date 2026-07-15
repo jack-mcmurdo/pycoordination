@@ -9,7 +9,9 @@ drive back to their start poses. With ``--web-viewer`` the example is
 browser, then press-drag-release on the map to post a goal pose (RViz
 "2D Nav Goal" style; a plain click aims the goal heading from the robot
 toward the click; Esc deselects). Each goal is planned with Hybrid A* and
-dispatched as a mission; goals for a driving robot are ignored.
+dispatched as a mission; posting a goal to a driving robot stops it (its
+envelope is truncated at the earliest stopping point) and re-tasks it
+toward the new goal from wherever it comes to rest.
 
 Run:
 
@@ -91,23 +93,46 @@ if __name__ == "__main__":
     tec = TrajectoryEnvelopeCoordinatorSimulation(CONTROL_PERIOD=20, TEMPORAL_RESOLUTION=1000.0)
     tec.setupSolver()
 
+    retasking: set[int] = set()
+
+    async def stop_robot(robotID: int, timeout: float = 30.0) -> bool:
+        """Abort the current mission: truncate the envelope at the earliest
+        stopping point, then wait for the robot to park there."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while not tec.truncateEnvelope(robotID):  # False while a replan holds the robot
+            if loop.time() > deadline:
+                return False
+            await asyncio.sleep(0.1)
+        while tec.isDrivingRobot(robotID):
+            if loop.time() > deadline:
+                return False
+            await asyncio.sleep(0.05)
+        return True
+
     async def on_goal(robotID: int, x: float, y: float, theta: float) -> None:
-        if robotID not in tec.trackers:
+        if robotID not in tec.trackers or robotID in retasking:
             return
-        if tec.isDrivingRobot(robotID):
-            print(f"robot {robotID} is driving — goal ignored")
-            return
-        report = tec.trackers[robotID].getRobotReport()
-        pose = report.getPose() if report is not None else None
-        if pose is None:
-            return
+        retasking.add(robotID)
         try:
-            path = await asyncio.to_thread(plan_path, planners[robotID], pose, Pose(x, y, theta))
-        except RuntimeError as exc:
-            print(exc)
-            return
-        tec.addMissions(Mission(robotID, path))
-        print(f"robot {robotID} → ({x:.1f}, {y:.1f}, {theta:.2f})")
+            if tec.isDrivingRobot(robotID):
+                print(f"robot {robotID} is driving — stopping it for the new goal")
+                if not await stop_robot(robotID):
+                    print(f"robot {robotID} did not stop in time — goal ignored")
+                    return
+            report = tec.trackers[robotID].getRobotReport()
+            pose = report.getPose() if report is not None else None
+            if pose is None:
+                return
+            try:
+                path = await asyncio.to_thread(plan_path, planners[robotID], pose, Pose(x, y, theta))
+            except RuntimeError as exc:
+                print(exc)
+                return
+            tec.addMissions(Mission(robotID, path))
+            print(f"robot {robotID} → ({x:.1f}, {y:.1f}, {theta:.2f})")
+        finally:
+            retasking.discard(robotID)
 
     # mirrors the flag _common._parse_args parses
     interactive = "--web-viewer" in sys.argv
