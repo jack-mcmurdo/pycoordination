@@ -2,10 +2,10 @@
 
 ## Install
 
-Python ≥ 3.12. For the animated viewers, install the `viz` extra:
+Python ≥ 3.12. The viewers (pyglet and browser) ship with the package:
 
 ```bash
-pip install "coordination-oru[viz]"
+pip install coordination-oru
 ```
 
 From a source checkout:
@@ -13,7 +13,7 @@ From a source checkout:
 ```bash
 git clone https://github.com/jack-mcmurdo/pycoordination
 cd pycoordination
-pip install -e .[viz,dev]
+pip install -e .[dev]
 ```
 
 The web viewer's frontend ships prebuilt in PyPI wheels. In a source checkout,
@@ -26,8 +26,10 @@ npm --prefix frontend install && npm --prefix frontend run build
 ## Run the dynamic-missions demo
 
 ```bash
-python examples/dynamic_missions.py --web-viewer
+coordination-oru-demo
 ```
+
+(From a source checkout: `python examples/dynamic_missions.py --web-viewer`.)
 
 This opens a browser view of three car-like robots on a 20×20 m
 occupancy-grid map. **Click a robot, then press-drag-release on the map** to

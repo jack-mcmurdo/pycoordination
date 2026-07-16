@@ -32,7 +32,21 @@ runtime: the STP solver, Allen relations, and the trajectory-envelope plumbing.
 The general meta-CSP search engine, Boolean CSP solver, and timeline planner
 are dropped.
 
-## Install
+## Quick start
+
+```bash
+pip install coordination-oru
+coordination-oru-demo
+```
+
+This installs from PyPI (web-viewer frontend prebuilt) and opens the
+interactive demo in your browser: three robots on an occupancy-grid map.
+Click a robot, then press-drag-release on the map to post a goal pose —
+the built-in Hybrid A* planner plans the path and the coordinator sequences
+any conflicts live. `--headless` runs a scripted corner-swap scenario
+instead (`--pyglet` for the desktop viewer, `--help` for all flags).
+
+## Install (development)
 
 ```bash
 pip install -e .[dev]
@@ -40,9 +54,9 @@ pip install -e .[dev]
 
 ## Examples
 
-Each example is a standalone script — run it directly with Python. With the
-`viz` extra installed (`pip install -e .[viz]`) it opens an animated pyglet
-viewer; without it, it runs headless and prints per-robot progress.
+Each example is a standalone script — run it directly with Python. By default
+it opens an animated pyglet viewer (the viewers ship with the package); pass
+`--headless` to run text-only with per-robot progress instead.
 
 ```bash
 python examples/two_robots.py

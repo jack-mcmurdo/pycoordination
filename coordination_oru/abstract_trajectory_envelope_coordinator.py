@@ -839,9 +839,6 @@ class AbstractTrajectoryEnvelopeCoordinator(abc.ABC):
             assert isinstance(startParkingTracker, TrajectoryEnvelopeTrackerDummy)
             startParking = startParkingTracker.getTrajectoryEnvelope()
             assert self.solver is not None
-            endParking = self.solver.createParkingEnvelope(
-                robotID, PARKING_DURATION, te.getTrajectory().getPose()[-1], "whatever", self.getFootprint(robotID)
-            )
 
             coordinator = self
 
@@ -887,7 +884,12 @@ class AbstractTrajectoryEnvelopeCoordinator(abc.ABC):
                     if old_tracker is not None:
                         coordinator.communicatedCPs.pop(old_tracker, None)
 
-                    coordinator.placeRobot(robotID, None, endParking, None)
+                    # Park at the *current* envelope's final pose: the envelope
+                    # may have been replaced mid-drive (truncation, replanning),
+                    # so a parking envelope captured at mission start could sit
+                    # at the superseded goal.
+                    endPose = self_inner.myTE.getTrajectory().getPose()[-1]
+                    coordinator.placeRobot(robotID, endPose)
                     coordinator.computeCriticalSections()
                     coordinator.updateDependencies()
 

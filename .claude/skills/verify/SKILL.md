@@ -7,7 +7,7 @@ description: Build, run, and observe coordination_oru changes end-to-end (exampl
 
 ## Build / install
 
-- `pip install -e ".[viz,dev]"` — core + both viewers + test deps.
+- `pip install -e ".[dev]"` — core (includes both viewers) + test deps.
 - Web viewer frontend: `npm --prefix frontend install && npm --prefix frontend run build`
   (outputs to `coordination_oru/viz/static/`, gitignored; the web viewer
   refuses to start without it).

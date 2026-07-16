@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "coordination-oru"
-version = "0.6.0"
+version = "0.6.1"
 description = "Python port of coordination_oru: a multi-robot trajectory-envelope coordinator."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -19,6 +19,11 @@ dependencies = [
     "attrs>=23.0",
     "pyyaml>=6.0",
     "scipy>=1.12",
+    # viewers ship by default so `coordination-oru-demo` works out of the box
+    "pyglet>=2.1",
+    "starlette>=0.37",
+    "uvicorn>=0.29",
+    "websockets>=12.0",  # uvicorn's websocket backend — bare uvicorn ships none
 ]
 
 [project.optional-dependencies]
@@ -27,11 +32,7 @@ future = [
     "qualreas>=0.6",
     "matplotlib>=3.8",
 ]
-viz = [
-    "pyglet>=2.1",
-    "starlette>=0.37",
-    "uvicorn>=0.29",
-]
+viz = []  # deprecated: the viewers are core dependencies now
 docs = [
     "mkdocs-material>=9.5",
     "mkdocstrings[python]>=0.24",
@@ -40,10 +41,11 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "mypy>=1.8",
-    "starlette>=0.37",
-    "uvicorn>=0.29",
     "httpx2>=2.0",
 ]
+
+[project.scripts]
+coordination-oru-demo = "coordination_oru.demo:main"
 
 [tool.setuptools.packages.find]
 include = ["coordination_oru*"]
