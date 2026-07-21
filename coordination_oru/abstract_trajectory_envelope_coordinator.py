@@ -128,6 +128,8 @@ class AbstractTrajectoryEnvelopeCoordinator(abc.ABC):
 
         self.isDriving: dict[int, bool] = {}
 
+        self.criticalPointSafetyMargin = 0.0
+
         self._lock = asyncio.Lock()
 
     # -------------------------------------------------------------- footprint
@@ -173,6 +175,15 @@ class AbstractTrajectoryEnvelopeCoordinator(abc.ABC):
         if robotID in self.robotTrackingPeriodInMillis:
             return self.robotTrackingPeriodInMillis[robotID]
         return self.DEFAULT_ROBOT_TRACKING_PERIOD
+
+    def setCriticalPointSafetyMargin(self, margin: float) -> None:
+        """Stop yielding robots at least ``margin`` metres of arc length (along
+        their own path) before the first conflicting pose of a critical
+        section, in addition to the classic ``TRAILING_PATH_POINTS`` backoff.
+        0.0 (the default) preserves the original behaviour exactly."""
+        if margin < 0.0:
+            raise ValueError(f"critical point safety margin must be >= 0, got {margin}")
+        self.criticalPointSafetyMargin = margin
 
     def setRobotMaxVelocity(self, robotID: int, maxVelocity: float) -> None:
         self.robotMaxVelocity[robotID] = maxVelocity
@@ -526,25 +537,35 @@ class AbstractTrajectoryEnvelopeCoordinator(abc.ABC):
             ret.append(obstacle)
         return ret
 
-    def doReplanning(
+    async def doReplanning(
         self,
         mp: "AbstractMotionPlanner | None",
         fromPose: Pose,
         toPose: Pose,
         obstaclesToConsider: Sequence[BaseGeometry] = (),
     ) -> tuple | None:
+        """Plan off the event loop: ``mp.plan()`` may take seconds (or, for a
+        remote planner, must itself wait on messages delivered by this very
+        loop), so the whole motion-planner interaction runs in a worker
+        thread."""
         if mp is None:
             return None
-        mp.setStart(fromPose)
-        mp.setGoals(toPose)
-        if obstaclesToConsider:
-            mp.addObstacles(obstaclesToConsider)
-        successful = mp.plan()
-        if obstaclesToConsider:
-            mp.clearObstacles()
-        if successful:
-            return mp.getPath()
-        return None
+
+        def _plan() -> tuple | None:
+            mp.setStart(fromPose)
+            mp.setGoals(toPose)
+            if obstaclesToConsider:
+                mp.addObstacles(obstaclesToConsider)
+            try:
+                successful = mp.plan()
+            finally:
+                if obstaclesToConsider:
+                    mp.clearObstacles()
+            if successful:
+                return mp.getPath()
+            return None
+
+        return await asyncio.to_thread(_plan)
 
     # ------------------------------------------------------------ core algorithm
 
@@ -568,6 +589,20 @@ class AbstractTrajectoryEnvelopeCoordinator(abc.ABC):
                 return False
         return True
 
+    def _indexAtMarginBefore(self, poses: Sequence[Pose], index: int) -> int:
+        """Walk back from ``poses[index]`` until the accumulated arc length is
+        at least ``criticalPointSafetyMargin``; returns the reached index (0
+        when the path before ``index`` is shorter than the margin)."""
+        margin = self.criticalPointSafetyMargin
+        if margin <= 0.0:
+            return index
+        accumulated = 0.0
+        i = index
+        while i > 0 and accumulated < margin:
+            accumulated += poses[i].distanceTo(poses[i - 1])
+            i -= 1
+        return i
+
     def getCriticalPoint(self, yieldingRobotID: int, cs: CriticalSection, leadingRobotCurrentPathIndex: int) -> int:
         te1, te2 = cs.getTe1(), cs.getTe2()
         assert te1 is not None and te2 is not None
@@ -580,8 +615,16 @@ class AbstractTrajectoryEnvelopeCoordinator(abc.ABC):
             leadingRobotEnd, yieldingRobotEnd = cs.getTe1End(), cs.getTe2End()
             leadingRobotTE, yieldingRobotTE = te1, te2
 
+        yieldingPoses = yieldingRobotTE.getTrajectory().getPose()
+
         if leadingRobotCurrentPathIndex < leadingRobotStart:
-            return max(0, yieldingRobotStart - TRAILING_PATH_POINTS)
+            return max(
+                0,
+                min(
+                    yieldingRobotStart - TRAILING_PATH_POINTS,
+                    self._indexAtMarginBefore(yieldingPoses, yieldingRobotStart),
+                ),
+            )
 
         leadingPoses = leadingRobotTE.getTrajectory().getPose()
         leadingRobotInPose = translate(
@@ -602,7 +645,6 @@ class AbstractTrajectoryEnvelopeCoordinator(abc.ABC):
                 )
             leadingRobotInPose = unary_union(polys) if len(polys) > 1 else polys[0]
 
-        yieldingPoses = yieldingRobotTE.getTrajectory().getPose()
         for i in range(yieldingRobotStart, yieldingRobotEnd + 1):
             p = yieldingPoses[i]
             yieldingRobotInPose = translate(
@@ -611,9 +653,15 @@ class AbstractTrajectoryEnvelopeCoordinator(abc.ABC):
                 p.getY(),
             )
             if leadingRobotInPose.intersects(yieldingRobotInPose):
-                return max(0, i - TRAILING_PATH_POINTS)
+                return max(0, min(i - TRAILING_PATH_POINTS, self._indexAtMarginBefore(yieldingPoses, i)))
 
-        return max(0, yieldingRobotStart - TRAILING_PATH_POINTS)
+        return max(
+            0,
+            min(
+                yieldingRobotStart - TRAILING_PATH_POINTS,
+                self._indexAtMarginBefore(yieldingPoses, yieldingRobotStart),
+            ),
+        )
 
     def isAhead(self, cs: CriticalSection, rr1: RobotReport, rr2: RobotReport) -> int:
         te1, te2 = cs.getTe1(), cs.getTe2()

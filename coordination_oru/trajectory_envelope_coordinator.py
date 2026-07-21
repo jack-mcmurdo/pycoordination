@@ -76,6 +76,7 @@ class TrajectoryEnvelopeCoordinator(AbstractTrajectoryEnvelopeCoordinator):
         self.staticReplan = False
         self.isBlocked = False
         self.isDeadlockedFlag = False
+        self.deadlockedCycles: list[list[int]] = []
 
         self.deadlockedCallback: Callable[[], None] | None = None
         self.fake = False
@@ -167,12 +168,15 @@ class TrajectoryEnvelopeCoordinator(AbstractTrajectoryEnvelopeCoordinator):
 
     def computeIsDeadlocked(self) -> bool:
         """Recompute :attr:`isDeadlockedFlag` without firing the
-        deadlocked callback — safe for observers (e.g. viewers) to poll."""
+        deadlocked callback — safe for observers (e.g. viewers) to poll.
+        Also records :attr:`deadlockedCycles`: every nonlive cycle whose
+        robots have all come to rest at their communicated critical points
+        (``[]`` when none has)."""
         g = self.depsToGraph(self.currentDependencies)
         nonlive_cycles = self.findSimpleNonliveCycles(g)
-        self.isDeadlockedFlag = False
+        deadlockedCycles: list[list[int]] = []
         for cycle in nonlive_cycles:
-            self.isDeadlockedFlag = True
+            allStopped = True
             for robotID in cycle:
                 tracker = self.trackers[robotID]
                 rr = tracker.getLastRobotReport()
@@ -182,10 +186,12 @@ class TrajectoryEnvelopeCoordinator(AbstractTrajectoryEnvelopeCoordinator):
                     and communicated[0] == rr.getCriticalPoint()
                     and rr.getCriticalPoint() == rr.getPathIndex()
                 ):
-                    self.isDeadlockedFlag = False
+                    allStopped = False
                     break
-            if self.isDeadlockedFlag:
-                break
+            if allStopped:
+                deadlockedCycles.append(list(cycle))
+        self.deadlockedCycles = deadlockedCycles
+        self.isDeadlockedFlag = bool(deadlockedCycles)
         return self.isDeadlockedFlag
 
     def isDeadlocked(self) -> bool:
@@ -394,8 +400,9 @@ class TrajectoryEnvelopeCoordinator(AbstractTrajectoryEnvelopeCoordinator):
         return False
 
     async def _rePlanPathTask(self, robotsToReplan: set[int], allConnectedRobots: set[int]) -> None:
-        async with self._lock:
-            self.rePlanPath(robotsToReplan, allConnectedRobots)
+        # rePlanPath scopes the lock itself (gather -> plan unlocked -> commit),
+        # so a slow or unplannable plan never freezes the rest of the location.
+        await self.rePlanPath(robotsToReplan, allConnectedRobots)
 
     async def stopInference(self) -> None:
         await super().stopInference()
@@ -419,50 +426,60 @@ class TrajectoryEnvelopeCoordinator(AbstractTrajectoryEnvelopeCoordinator):
                 )
         return True
 
-    def rePlanPath(self, robotsToReplan: set[int], robotsAsObstacles: set[int]) -> bool:
+    async def rePlanPath(self, robotsToReplan: set[int], robotsAsObstacles: set[int]) -> bool:
+        """Three-phase lock scope per robot: gather dep/pose/obstacle info
+        under ``self._lock``, run the (possibly slow, possibly remote) plan
+        with the lock released — the involved robots stay pinned via
+        ``replanningStoppingPoints`` — and re-acquire only for the
+        ``replacePath`` commit."""
         ret = False
-        for robotID in robotsToReplan:
-            currentDeps = self.getCurrentDependencies()
-            dep: Dependency | None
-            if len(robotsToReplan) == 1:
-                dep = self.replanningStoppingPoints.get(robotID)
-                if dep is None:
-                    log.info("invalid_replan", robotID=robotID)
-                    continue
-            else:
-                dep = currentDeps.get(robotID)
-                if dep is None:
-                    log.info("robot_not_deadlocked", robotID=robotID)
-                    continue
+        try:
+            for robotID in sorted(robotsToReplan):
+                async with self._lock:
+                    currentDeps = self.getCurrentDependencies()
+                    dep: Dependency | None
+                    if len(robotsToReplan) == 1:
+                        dep = self.replanningStoppingPoints.get(robotID)
+                        if dep is None:
+                            log.info("invalid_replan", robotID=robotID)
+                            continue
+                    else:
+                        dep = currentDeps.get(robotID)
+                        if dep is None:
+                            log.info("robot_not_deadlocked", robotID=robotID)
+                            continue
 
-            currentWaitingIndex = dep.getWaitingPoint()
-            currentWaitingPose = dep.getWaitingPose()
-            oldPath: tuple["PoseSteering", ...] = dep.getWaitingTrajectoryEnvelope().getTrajectory().getPoseSteering()
-            currentWaitingGoal = oldPath[-1].getPose()
+                    currentWaitingIndex = dep.getWaitingPoint()
+                    currentWaitingPose = dep.getWaitingPose()
+                    oldPath: tuple["PoseSteering", ...] = dep.getWaitingTrajectoryEnvelope().getTrajectory().getPoseSteering()
+                    currentWaitingGoal = oldPath[-1].getPose()
 
-            obstacles = []
-            otherRobotIDs = {rid for rid in robotsAsObstacles if rid != robotID}
-            if otherRobotIDs:
-                obstacles = self.getObstaclesInCriticalPoints(list(otherRobotIDs))
+                    obstacles = []
+                    otherRobotIDs = {rid for rid in robotsAsObstacles if rid != robotID}
+                    if otherRobotIDs:
+                        obstacles = self.getObstaclesInCriticalPoints(list(otherRobotIDs))
 
-            mp = self.motionPlanners.get(robotID)
-            if mp is None:
-                log.warning("no_motion_planner_for_replan", robotID=robotID)
-                continue
+                    mp = self.motionPlanners.get(robotID)
+                    if mp is None:
+                        log.warning("no_motion_planner_for_replan", robotID=robotID)
+                        continue
 
-            newPath = self.doReplanning(mp, currentWaitingPose, currentWaitingGoal, obstacles)
-            self.replanningTrialsCounter += 1
-            if newPath:
-                newCompletePath = list(oldPath[:currentWaitingIndex]) + list(newPath)
-                self.replacePath(robotID, newCompletePath, currentWaitingIndex, robotsToReplan)
-                self.successfulReplanningTrialsCounter += 1
-                log.info("replan_succeeded", robotID=robotID)
-                ret = True
-                break
-            log.info("replan_failed", robotID=robotID)
-
-        for robotID in robotsToReplan:
-            self.replanningStoppingPoints.pop(robotID, None)
+                newPath = await self.doReplanning(mp, currentWaitingPose, currentWaitingGoal, obstacles)
+                self.replanningTrialsCounter += 1
+                if newPath:
+                    newCompletePath = list(oldPath[:currentWaitingIndex]) + list(newPath)
+                    async with self._lock:
+                        self.replacePath(robotID, newCompletePath, currentWaitingIndex, robotsToReplan)
+                    self.successfulReplanningTrialsCounter += 1
+                    log.info("replan_succeeded", robotID=robotID)
+                    ret = True
+                    break
+                log.info("replan_failed", robotID=robotID)
+        finally:
+            # No await between here and the pops: runs even when the task is
+            # cancelled mid-plan, without re-entering the lock.
+            for robotID in robotsToReplan:
+                self.replanningStoppingPoints.pop(robotID, None)
         return ret
 
     def replacePath(

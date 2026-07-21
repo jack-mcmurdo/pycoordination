@@ -318,9 +318,12 @@ async def test_spawn_replanning_defers_replan_to_a_task(
 
     coordinator.setMotionPlanner(1, _NeverCalledPlanner())
     calls: list[tuple[set[int], set[int]]] = []
-    monkeypatch.setattr(
-        coordinator, "rePlanPath", lambda robots, obstacles: calls.append((robots, obstacles))
-    )
+
+    async def _stub_replan(robots: set[int], obstacles: set[int]) -> bool:
+        calls.append((robots, obstacles))
+        return False
+
+    monkeypatch.setattr(coordinator, "rePlanPath", _stub_replan)
 
     assert coordinator.spawnReplanning({1}, {1, 2}) is True
     assert calls == [], "rePlanPath ran synchronously inside spawnReplanning"

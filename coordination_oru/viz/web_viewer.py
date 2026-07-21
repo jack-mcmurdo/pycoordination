@@ -27,13 +27,15 @@ ms):
   "criticalSections": [{"robot1", "start1", "end1", "robot2", "start2",
   "end2"}], "dependencies": [{"waiting", "driving", "waitingPoint"}],
   "counts": {"driving", "parked", "criticalSections", "orders"},
-  "deadlocked": bool}`` — sent every poll tick (``poll_hz``). The frontend
+  "deadlocked": bool, "deadlockCycles": [[robotID]]}`` — sent every poll
+  tick (``poll_hz``). The frontend
   places the static footprint outline at ``pose`` (translate+rotate, cheap
   enough to CSS-animate); critical sections reference path indices into
   the static paths, the frontend slices the highlight segments from those;
   ``dependencies`` are the current yielder → leader precedence orders;
   ``deadlocked`` is true while the coordinator sees a nonlive cycle whose
-  robots are all stopped at their critical points.
+  robots are all stopped at their critical points; ``deadlockCycles``
+  lists those cycles' robot IDs.
 
 Inbound messages: ``{"kind": "postGoal", "robot": int, "goal": [x, y,
 theta]}`` — a goal pose for a robot, dispatched to the ``on_goal``
@@ -252,6 +254,7 @@ def build_state_message(
     # other coordinator subclasses simply report False)
     compute_deadlocked = getattr(coordinator, "computeIsDeadlocked", None)
     deadlocked = bool(compute_deadlocked()) if callable(compute_deadlocked) else False
+    deadlock_cycles = [list(c) for c in getattr(coordinator, "deadlockedCycles", [])]
 
     return {
         "kind": "state",
@@ -265,6 +268,7 @@ def build_state_message(
             "orders": len(coordinator.CSToDepsOrder),
         },
         "deadlocked": deadlocked,
+        "deadlockCycles": deadlock_cycles,
     }
 
 
