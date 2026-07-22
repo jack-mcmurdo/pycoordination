@@ -161,3 +161,63 @@ async def test_lock_released_while_slow_plan_runs(
 
     assert await replan is False
     assert 1 not in coordinator.replanningStoppingPoints
+
+
+# --------------------------------------------------- replan-failed callback
+
+
+@pytest.mark.asyncio
+async def test_replan_failed_callback_fires_after_pins_popped(
+    coordinator: TrajectoryEnvelopeCoordinatorSimulation, footprint: tuple[tuple[float, float], ...]
+) -> None:
+    """An unplannable replan reports the failed set through
+    setReplanFailedCallback, after the replanningStoppingPoints pins are
+    popped (so the callback may immediately preempt the robots)."""
+
+    class _FailingPlanner(AbstractMotionPlanner):
+        def doPlanning(self) -> bool:
+            return False
+
+    coordinator.setFootprint(1, *footprint)
+    path_a, _ = two_robot_cross()
+    te1 = coordinator.solver.createEnvelopeNoParking(1, path_a, "Driving", coordinator.getFootprint(1))
+    coordinator.replanningStoppingPoints[1] = Dependency(te1, None, 5, 0)
+    coordinator.setMotionPlanner(1, _FailingPlanner())
+
+    failed: list[set[int]] = []
+    pins_at_callback: list[bool] = []
+
+    def on_failed(robots: set[int]) -> None:
+        failed.append(robots)
+        pins_at_callback.append(1 in coordinator.replanningStoppingPoints)
+
+    coordinator.setReplanFailedCallback(on_failed)
+
+    assert await coordinator.rePlanPath({1}, {1}) is False
+    assert failed == [{1}]
+    assert pins_at_callback == [False]
+
+
+@pytest.mark.asyncio
+async def test_replan_failed_callback_not_fired_on_cancel(
+    coordinator: TrajectoryEnvelopeCoordinatorSimulation, footprint: tuple[tuple[float, float], ...]
+) -> None:
+    class _FailingPlanner(AbstractMotionPlanner):
+        def doPlanning(self) -> bool:
+            return False
+
+    coordinator.setFootprint(1, *footprint)
+    path_a, _ = two_robot_cross()
+    te1 = coordinator.solver.createEnvelopeNoParking(1, path_a, "Driving", coordinator.getFootprint(1))
+    coordinator.replanningStoppingPoints[1] = Dependency(te1, None, 5, 0)
+    coordinator.setMotionPlanner(1, _FailingPlanner())
+
+    failed: list[set[int]] = []
+    coordinator.setReplanFailedCallback(failed.append)
+
+    # A cancelled replan must not report failure either.
+    replan = asyncio.create_task(coordinator.rePlanPath({1}, {1}))
+    replan.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await replan
+    assert failed == []

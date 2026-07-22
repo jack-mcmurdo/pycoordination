@@ -79,6 +79,7 @@ class TrajectoryEnvelopeCoordinator(AbstractTrajectoryEnvelopeCoordinator):
         self.deadlockedCycles: list[list[int]] = []
 
         self.deadlockedCallback: Callable[[], None] | None = None
+        self.replanFailedCallback: Callable[[set[int]], None] | None = None
         self.fake = False
 
     # ---------------------------------------------------------------- config
@@ -102,6 +103,15 @@ class TrajectoryEnvelopeCoordinator(AbstractTrajectoryEnvelopeCoordinator):
 
     def setDeadlockedCallback(self, cb: Callable[[], None]) -> None:
         self.deadlockedCallback = cb
+
+    def setReplanFailedCallback(self, cb: Callable[[set[int]], None]) -> None:
+        """Called from :meth:`rePlanPath` — after the
+        ``replanningStoppingPoints`` pins are popped — when no robot in the
+        set could be replanned, with the ``robotsToReplan`` set. Lets the
+        deployment decide what to do with an unresolvable deadlock (e.g.
+        cancel the missions and park the robots). Not called when the replan
+        task is cancelled."""
+        self.replanFailedCallback = cb
 
     def setStaticReplan(self, value: bool) -> None:
         self.staticReplan = value
@@ -480,6 +490,9 @@ class TrajectoryEnvelopeCoordinator(AbstractTrajectoryEnvelopeCoordinator):
             # cancelled mid-plan, without re-entering the lock.
             for robotID in robotsToReplan:
                 self.replanningStoppingPoints.pop(robotID, None)
+        # Past the finally, so a cancelled replan never reports failure.
+        if not ret and self.replanFailedCallback is not None:
+            self.replanFailedCallback(set(robotsToReplan))
         return ret
 
     def replacePath(
