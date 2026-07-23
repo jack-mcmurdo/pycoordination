@@ -133,7 +133,18 @@ class TrajectoryEnvelopeSolver:
         return self._envelopes[envelope_id]
 
     def mark_completed(self, envelope_id: int) -> None:
-        self._envelopes[envelope_id].completed = True
+        """Retire an envelope: flag it (``envelopes()`` excludes it from the
+        active set consumed by critical-section/dependency computation, but
+        it stays in ``all_envelopes()`` for introspection) and detach its
+        two STP variables (``remove_variable`` — ports Java's
+        ``removeConstraints`` + ``removeVariable``), freeing their slots for
+        reuse rather than letting the temporal network's working set grow
+        for the coordinator's entire lifetime.
+        """
+        envelope = self._envelopes[envelope_id]
+        envelope.completed = True
+        self.stp.remove_variable(envelope.start_node)
+        self.stp.remove_variable(envelope.end_node)
 
     # ------------------------------------------------------------- ordering
 

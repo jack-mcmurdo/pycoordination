@@ -522,6 +522,13 @@ class TrajectoryEnvelopeCoordinator(AbstractTrajectoryEnvelopeCoordinator):
         assert self.solver is not None
         newTE = self.solver.createEnvelopeNoParking(robotID, newPath, "Driving", self.getFootprint(robotID))
         self.trackers[robotID].updateTrajectoryEnvelope(newTE)
+        # Retire the superseded envelope now that newTE has taken over —
+        # ports Java's inline removeConstraints+removeVariable pair right
+        # here in replacePath (TrajectoryEnvelopeCoordinator.java, replacing
+        # the old driving envelope before splicing in the new one), not just
+        # the one in onTrackingFinished: every replan/truncate splice goes
+        # through here and was leaking te otherwise.
+        self.cleanUp(te)
 
         self.envelopesToTrack.append(newTE)
         self.computeCriticalSections()

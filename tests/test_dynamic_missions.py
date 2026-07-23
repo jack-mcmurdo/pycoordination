@@ -158,10 +158,56 @@ async def test_finished_mission_retires_envelopes(
     active_ids = {te.envelope_id for te in coordinator.solver.envelopes()}
     assert start_parking.envelope_id not in active_ids
     assert driving_te.envelope_id not in active_ids
-    # cleanUp only flags completion; the envelope objects themselves (and
-    # their STP nodes) are never actually removed from the solver.
+    # The envelope_id/TrajectoryEnvelope objects themselves stay around (for
+    # introspection, all_envelopes()) — only their underlying STP variables
+    # are actually detached (test_stp_working_set_stays_bounded_across_
+    # sequential_missions below proves that half of it).
     all_ids = {te.envelope_id for te in coordinator.solver.all_envelopes()}
     assert {start_parking.envelope_id, driving_te.envelope_id} <= all_ids
+
+
+async def test_stp_working_set_stays_bounded_across_sequential_missions(
+    coordinator: TrajectoryEnvelopeCoordinatorSimulation, footprint: tuple[tuple[float, float], ...]
+) -> None:
+    """cleanUp must actually detach a retired envelope's STP variables
+    (STPSolver.remove_variable), not just flag it completed: this port's
+    STPSolver is a dense distance matrix sized for the live variable count,
+    unlike Java's sparse ConstraintNetwork graph (verified against the real
+    org.metacsp.framework source) — without freeing slots for reuse, the
+    working set grows without bound for every mission a robot ever runs
+    over the coordinator's lifetime, exactly the "matrix keeps every
+    completed mission's entries forever" bug this guards against.
+    """
+    coordinator.setFootprint(1, *footprint)
+    coordinator.placeRobot(1, Pose(-4.0, 0.0, 0.0))
+
+    # Two missions is enough for num_variables to plateau instead of
+    # climbing: each mission allocates 2 STP nodes (start/end) for its
+    # driving envelope plus 2 for the parking envelope placeRobot creates
+    # at the end -- if those aren't freed, num_variables keeps climbing by
+    # ~4 every mission forever.
+    after_first: int | None = None
+    for i in range(5):
+        x = -4.0 if i % 2 == 0 else 4.0
+        goal_x = 4.0 if i % 2 == 0 else -4.0
+        assert coordinator.addMissions(Mission(1, line_path(x, 0.0, goal_x, 0.0)))
+        deadline = asyncio.get_running_loop().time() + 5.0
+        while not coordinator.isDrivingRobot(1):
+            assert asyncio.get_running_loop().time() < deadline, f"mission {i} never dispatched"
+            await asyncio.sleep(0.01)
+        await wait_until_idle(coordinator, timeout=10.0)
+        if i == 0:
+            after_first = coordinator.solver.stp.num_variables
+        else:
+            assert coordinator.solver.stp.num_variables == after_first, (
+                f"STP working set grew after mission {i}: "
+                f"{coordinator.solver.stp.num_variables} vs {after_first} after mission 0 "
+                "-- retired envelopes' variables are not being freed"
+            )
+    # All_envelopes() bookkeeping is expected to grow (cheap Python objects,
+    # kept for introspection) -- only the STP working set must stay flat.
+    assert len(coordinator.solver.all_envelopes()) >= 10
+
 
 
 async def test_cleanup_stale_parking_envelope_helper(

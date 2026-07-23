@@ -12,6 +12,13 @@ The Java implementation supports incremental constraint removal via a kept
 copy of the original constraint graph. We start with that pattern: every
 ``add_constraint`` records the edge and runs an incremental update; a removal
 or backtrack triggers a full rebuild.
+
+``remove_variable`` actually detaches a node (drops every constraint that
+touches it, then frees its slot) rather than merely hiding it: a node's
+slot is reused by a later ``new_variable()`` call instead of the matrix
+growing without bound for the process's entire lifetime. The caller must
+never reference a removed node again — its slot may already mean something
+else by the time a stale reference is queried.
 """
 
 from __future__ import annotations
@@ -53,6 +60,8 @@ class STPSolver:
         np.fill_diagonal(self._d, 0.0)
         self._n = 0
         self._edges: list[_Edge] = []
+        #: node indices freed by remove_variable, available for reuse
+        self._free: list[int] = []
         # allocate the origin
         self._origin = self.new_variable()
         assert self._origin == ORIGIN
@@ -61,14 +70,38 @@ class STPSolver:
 
     @property
     def num_variables(self) -> int:
-        return self._n
+        """Live node count (allocated minus freed) — the working-set size
+        that actually drives rebuild()'s cost, not the lifetime total."""
+        return self._n - len(self._free)
 
     def new_variable(self) -> int:
+        if self._free:
+            idx = self._free.pop()
+            self._d[idx, : self._n] = INF
+            self._d[: self._n, idx] = INF
+            self._d[idx, idx] = 0.0
+            return idx
         if self._n >= self._max:
             self._grow(max(self._max * 2, self._n + 1))
         idx = self._n
         self._n += 1
         return idx
+
+    def remove_variable(self, node: int) -> None:
+        """Detach ``node`` from the network: drop every constraint that
+        touches it (as either endpoint) and free its slot for a future
+        ``new_variable()`` to reuse. Ports Java's ``removeConstraints`` +
+        ``removeVariable`` pair — this solver has no separate incident-edge
+        query, so one call does both. A no-op if already removed.
+        """
+        self._check_node(node)
+        if node == ORIGIN:
+            raise ValueError("cannot remove the origin")
+        if node in self._free:
+            return
+        self._edges = [e for e in self._edges if e.src != node and e.dst != node]
+        self._free.append(node)
+        self.rebuild()
 
     def _grow(self, new_size: int) -> None:
         bigger = np.full((new_size, new_size), INF, dtype=np.float64)
@@ -149,6 +182,8 @@ class STPSolver:
     def _check_node(self, node: int) -> None:
         if not 0 <= node < self._n:
             raise IndexError(f"node {node} is out of range [0, {self._n})")
+        if node in self._free:
+            raise IndexError(f"node {node} was removed (remove_variable) — stale reference")
 
     def rebuild(self) -> None:
         """Recompute the distance matrix from scratch — used after removals."""

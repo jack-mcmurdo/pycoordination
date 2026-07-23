@@ -879,17 +879,23 @@ class AbstractTrajectoryEnvelopeCoordinator(abc.ABC):
             self.escapingCSToWaitingRobotIDandCP.pop(cs, None)
 
     def cleanUp(self, te: "TrajectoryEnvelope") -> None:
-        """Retire an envelope no longer in use (Java's ``cleanUp``:
-        ``solver.removeConstraints`` + ``solver.removeVariable``). This
-        port's solver keeps STP matrix nodes for an envelope's lifetime
-        (see ``TrajectoryEnvelopeSolver.mark_completed``) rather than
-        removing them, but ``mark_completed`` excludes it from
-        ``solver.envelopes()`` — the active set ``computeCriticalSections``
-        considers — which is the load-bearing half of the Java behavior:
-        without it, every retired envelope (every parking spot, every
-        finished mission) stays "active" forever and can spuriously
-        conflict with robots long gone from that space. Also drops it from
-        ``currentParkingEnvelopes`` if present.
+        """Retire an envelope no longer in use — ports Java's ``cleanUp``
+        (``solver.removeConstraints`` + ``solver.removeVariable``, verified
+        against the real ``org.metacsp.framework.ConstraintSolver`` /
+        ``ConstraintNetwork`` source). Java's network is a sparse graph
+        (``removeVariable`` deletes the vertex outright; memory is bounded
+        by live entries alone); this port's ``TrajectoryEnvelopeSolver``
+        instead uses a dense STP distance matrix sized for the whole
+        process's variable count, so the equivalent fix
+        (``TrajectoryEnvelopeSolver.mark_completed``) both excludes the
+        envelope from ``solver.envelopes()`` — the active set
+        ``computeCriticalSections`` considers, so a retired envelope can't
+        spuriously conflict with robots long gone from that space — and
+        detaches its two STP variables, freeing their matrix slots for
+        reuse so the *working set* stays bounded by concurrently-active
+        envelopes rather than growing for the coordinator's entire
+        lifetime. Also drops it from ``currentParkingEnvelopes`` if
+        present.
         """
         assert self.solver is not None
         self.solver.mark_completed(te.envelope_id)
