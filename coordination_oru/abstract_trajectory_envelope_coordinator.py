@@ -878,6 +878,36 @@ class AbstractTrajectoryEnvelopeCoordinator(abc.ABC):
             self.allCriticalSections.discard(cs)
             self.escapingCSToWaitingRobotIDandCP.pop(cs, None)
 
+    def cleanUp(self, te: "TrajectoryEnvelope") -> None:
+        """Retire an envelope no longer in use (Java's ``cleanUp``:
+        ``solver.removeConstraints`` + ``solver.removeVariable``). This
+        port's solver keeps STP matrix nodes for an envelope's lifetime
+        (see ``TrajectoryEnvelopeSolver.mark_completed``) rather than
+        removing them, but ``mark_completed`` excludes it from
+        ``solver.envelopes()`` — the active set ``computeCriticalSections``
+        considers — which is the load-bearing half of the Java behavior:
+        without it, every retired envelope (every parking spot, every
+        finished mission) stays "active" forever and can spuriously
+        conflict with robots long gone from that space. Also drops it from
+        ``currentParkingEnvelopes`` if present.
+        """
+        assert self.solver is not None
+        self.solver.mark_completed(te.envelope_id)
+        if te in self.currentParkingEnvelopes:
+            self.currentParkingEnvelopes.remove(te)
+
+    def cleanUpStaleParkingEnvelope(self, robotID: int) -> None:
+        """A robot's parking envelope from before its *current* mission
+        stays in ``currentParkingEnvelopes`` until that mission finishes
+        through the normal ``onTrackingFinished`` path (which retires it
+        there) — a caller that ends a mission a different way (e.g.
+        recovery's hard-drop cancel) must retire it here instead, or it
+        leaks for the coordinator's remaining lifetime.
+        """
+        for te in list(self.currentParkingEnvelopes):
+            if te.robot_id == robotID:
+                self.cleanUp(te)
+
     # ------------------------------------------------------------------ missions
 
     def startTrackingAddedMissions(self) -> None:
@@ -925,8 +955,7 @@ class AbstractTrajectoryEnvelopeCoordinator(abc.ABC):
 
                     coordinator.cleanUpRobotCS(robotID, -1)
 
-                    if startParking in coordinator.currentParkingEnvelopes:
-                        coordinator.currentParkingEnvelopes.remove(startParking)
+                    coordinator.cleanUp(startParking)
 
                     old_tracker = coordinator.trackers.get(robotID)
                     if old_tracker is not None:
@@ -938,6 +967,11 @@ class AbstractTrajectoryEnvelopeCoordinator(abc.ABC):
                     # at the superseded goal.
                     endPose = self_inner.myTE.getTrajectory().getPose()[-1]
                     coordinator.placeRobot(robotID, endPose)
+                    # The just-finished driving envelope itself is now
+                    # superseded by the parking envelope placeRobot just
+                    # created — retire it too (Java's cleanUp; see the
+                    # method docstring for why this port needs it explicit).
+                    coordinator.cleanUp(self_inner.myTE)
                     coordinator.computeCriticalSections()
                     coordinator.updateDependencies()
 

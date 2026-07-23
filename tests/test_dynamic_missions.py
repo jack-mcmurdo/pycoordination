@@ -10,13 +10,13 @@ import math
 
 import pytest
 
+from coordination_oru.metacsp.spatial.pose import Pose
 from coordination_oru.mission import Mission
 from coordination_oru.simulation2D.trajectory_envelope_coordinator_simulation import (
     TrajectoryEnvelopeCoordinatorSimulation,
 )
 from tests.conftest import assert_no_collisions, wait_until_idle
 from tests.paths import line_path, shuttle_path
-
 
 pytestmark = pytest.mark.asyncio
 
@@ -125,3 +125,60 @@ async def test_truncate_mid_drive_parks_at_stopping_point(
     await wait_until_idle(coordinator, timeout=20.0)
     final = coordinator.trackers[1].getRobotReport().getPose()
     assert math.hypot(final.getX() - 0.0, final.getY() - 6.0) < 0.5
+
+
+async def test_finished_mission_retires_envelopes(
+    coordinator: TrajectoryEnvelopeCoordinatorSimulation, footprint: tuple[tuple[float, float], ...]
+) -> None:
+    """A finished mission's driving envelope and the parking envelope it
+    superseded must both retire (cleanUp: solver.mark_completed, dropped
+    from currentParkingEnvelopes) — otherwise every mission, forever, stays
+    "active" in the solver and can spuriously conflict with robots long
+    gone from that space (the ghost-critical-section class of bug)."""
+    coordinator.setFootprint(1, *footprint)
+    start_pose = (-4.0, 0.0)
+    path = shuttle_path(start_pose, (4.0, 0.0))
+    coordinator.placeRobot(1, path[0].getPose())
+    start_parking = coordinator.trackers[1].getTrajectoryEnvelope()
+
+    coordinator.addMissions(Mission(1, path))
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while not coordinator.isDrivingRobot(1):
+        assert asyncio.get_running_loop().time() < deadline, "mission never dispatched"
+        await asyncio.sleep(0.01)
+    driving_te = coordinator.trackers[1].getTrajectoryEnvelope()
+    assert driving_te.envelope_id != start_parking.envelope_id
+
+    await wait_until_idle(coordinator, timeout=10.0)
+
+    assert start_parking.completed, "the superseded parking envelope was never retired"
+    assert driving_te.completed, "the finished driving envelope was never retired"
+    assert start_parking not in coordinator.currentParkingEnvelopes
+    assert driving_te not in coordinator.currentParkingEnvelopes
+    active_ids = {te.envelope_id for te in coordinator.solver.envelopes()}
+    assert start_parking.envelope_id not in active_ids
+    assert driving_te.envelope_id not in active_ids
+    # cleanUp only flags completion; the envelope objects themselves (and
+    # their STP nodes) are never actually removed from the solver.
+    all_ids = {te.envelope_id for te in coordinator.solver.all_envelopes()}
+    assert {start_parking.envelope_id, driving_te.envelope_id} <= all_ids
+
+
+async def test_cleanup_stale_parking_envelope_helper(
+    coordinator: TrajectoryEnvelopeCoordinatorSimulation, footprint: tuple[tuple[float, float], ...]
+) -> None:
+    """cleanUpStaleParkingEnvelope(robotID) -- used by callers that end a
+    mission a different way than onTrackingFinished (e.g. a hard-drop
+    cancel) -- retires a robot's pre-mission parking envelope on demand."""
+    coordinator.setFootprint(1, *footprint)
+    coordinator.placeRobot(1, Pose(0.0, 0.0, 0.0))
+    parking = coordinator.trackers[1].getTrajectoryEnvelope()
+    assert parking in coordinator.currentParkingEnvelopes
+    assert not parking.completed
+
+    coordinator.cleanUpStaleParkingEnvelope(1)
+
+    assert parking.completed
+    assert parking not in coordinator.currentParkingEnvelopes
+    # idempotent: a robot with no stale parking envelope left is a no-op.
+    coordinator.cleanUpStaleParkingEnvelope(1)
