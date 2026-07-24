@@ -30,4 +30,18 @@ def configure_logging(level: int = logging.INFO) -> None:
 
 
 def get_logger(name: str | None = None, **bindings: Any) -> Any:
-    return structlog.get_logger(name).bind(**bindings)
+    """A lazy proxy, not a materialized logger: don't call ``.bind()`` here.
+
+    ``BoundLoggerLazyProxy.bind()`` immediately freezes in whatever
+    ``structlog.configure()`` last set (processors, wrapper class, logger
+    factory) onto a concrete ``BoundLogger``. Every call site does
+    ``log = get_logger(__name__)`` at module import time, which for
+    downstream consumers happens before their own ``structlog.configure()``
+    runs — eagerly binding would permanently lock these loggers onto
+    structlog's unconfigured defaults (console-only, print-based), deaf to
+    any later reconfiguration. ``structlog.get_logger(name, **bindings)``
+    passes bindings through as initial context instead, keeping the proxy
+    lazy so it materializes against whatever config is active at first log
+    call.
+    """
+    return structlog.get_logger(name, **bindings)
